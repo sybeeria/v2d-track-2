@@ -3,7 +3,8 @@
 # Every 10 min: logs status to RUN_DIR/watchdog.log and pulls runs/<run> (including policy and learner checkpoints) and /workspace/*.log into
 # RUN_DIR/pulled. Destroys the instance in RUN_DIR/host after a final pull when the box script has logged "box done",
 # when it has been gone for 60 min without that (unless RUN_DIR/KEEP exists), when this instance's estimated spend
-# reaches CAP_DOLLARS, or when the account's Vast credit falls below CREDIT_FLOOR (default 1).
+# reaches CAP_DOLLARS, or when the account's Vast credit falls below CREDIT_FLOOR (default 1). Each cycle also arms
+# scripts/vast/deadman.sh on the box, which stops the instance itself if this watchdog stops working.
 set -uo pipefail
 D=$(cd "${1:?run dir}" && pwd) cap=${2:?cap dollars} floor=${3:-1}
 name=$(basename "$D")
@@ -24,6 +25,8 @@ read -r start rate < <(vastai show instance "$id" --raw | python3 -I -c "import 
     echo "cannot read valid instance start/rate; watchdog not armed" >&2; exit 1;
 }
 python3 -I -c "import sys,math; c,f=map(float,sys.argv[1:]); assert all(math.isfinite(x) and x>=0 for x in (c,f))" "$cap" "$floor" || exit 2
+# The box-side backstop (scripts/vast/deadman.sh) stops the instance 30 min past the cap if this watchdog cannot.
+deadline=$(python3 -I -c "import sys; s,c,r=map(float,sys.argv[1:]); print(int(s + c / r * 3600 + 1800))" "$start" "$cap" "$rate")
 mkdir -p "$D/pulled"
 log() { echo "$(date -u +%FT%TZ) $*" >> "$D/watchdog.log"; }
 
@@ -106,6 +109,10 @@ while true; do
             grep -E '^training progress' \"\$f\" | tail -1 | cut -c1-120; done
         tail -1 /workspace/gpu_samples.log 2>/dev/null" > "$D/status.txt" 2>/dev/null
     log "state=${state:-unreachable} spend=\$$spend credit=\$${credit:-?} $(tr '\n' '|' < "$D/status.txt" | cut -c1-400)"
+    grace=5400; [ ! -e "$D/KEEP" ] || grace=0
+    ssh -n "${ssh_opts[@]}" root@"$host" "echo $deadline $grace > /workspace/$name.deadline.tmp && mv /workspace/$name.deadline.tmp /workspace/$name.deadline &&
+        { setsid nohup bash /workspace/v2d-track-2/scripts/vast/deadman.sh $name >> /workspace/$name.deadman.log 2>&1 < /dev/null & }" \
+        >> "$D/watchdog.log" 2>&1 || log "cannot arm box deadman"
     pull
     if [ "$state" = running ]; then
         active=$(ssh -n "${ssh_opts[@]}" root@"$host" "python3 - /workspace/v2d-track-2/runs/$name <<'PYJOBS'

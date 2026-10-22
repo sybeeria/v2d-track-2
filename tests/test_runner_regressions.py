@@ -152,6 +152,8 @@ elif tool=='fake_remote':
     if 'read -r pid' in cmd:
         event('quiesce')
         if os.environ.get('STOP_FAIL'): sys.exit(1)
+    elif 'deadman.sh' in cmd:
+        event('arm', cmd=cmd)
     elif 'setsid nohup' in cmd:
         event('launch'); print('launched')
     elif 'then echo done' in cmd:
@@ -247,6 +249,27 @@ class WatchdogTests(Sandbox):
         self.assertTrue((self.run / 'pulled/batch/state_20.safetensors').is_file())
         self.assertFalse((self.run / 'pulled/batch/.state_30.safetensors.tmp').exists())
         self.assertEqual([e['kind'] for e in self.events()].count('destroy'), 1)
+
+    def arming(self):
+        import re
+        arms = [e['cmd'] for e in self.events() if e['kind'] == 'arm']
+        self.assertTrue(arms)
+        return [tuple(map(int, re.search(r'echo (\d+) (\d+) > /workspace/batch\.deadline\.tmp', c).groups())) for c in arms]
+
+    def test_box_deadman_is_armed_30_min_past_the_cap(self):
+        before = time.time()
+        result = self.watchdog(cap='6', AGE='600')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # $6 at the fake's $1.20/h is 5 h after a start 600 s ago; the backstop adds 30 min.
+        for deadline, grace in self.arming():
+            self.assertAlmostEqual(deadline - before, 5 * 3600 + 1800 - 600, delta=30)
+            self.assertEqual(grace, 5400)
+
+    def test_keep_disables_only_the_deadman_idle_stop(self):
+        (self.run / 'KEEP').touch()
+        result = self.watchdog(cap='6', AGE='600')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual({grace for _, grace in self.arming()}, {0})
 
     def test_duplicate_watchdog_is_rejected(self):
         first=subprocess.Popen(['bash','scripts/vast/watchdog.sh',str(self.run),'100','1'],cwd=self.root,
