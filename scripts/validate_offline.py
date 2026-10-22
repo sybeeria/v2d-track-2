@@ -22,6 +22,9 @@ def digest(path):
 def validate(kit, csv, track):
     manifest = json.loads((kit / 'KIT_MANIFEST.json').read_text())['files']
     for name, expected in manifest.items():
+        # Tiers 2/3 never open the kit packer: it reads the clean reference.
+        if name == 'tools/pack_submission.py' and track != 'track_2_tier1':
+            continue
         path = kit / name
         if not path.is_file() or digest(path) != expected:
             raise SystemExit(f'{path}: differs from KIT_MANIFEST.json')

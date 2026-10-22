@@ -11,9 +11,10 @@ sampler=
 trap 'status=$?; if [ -n "$sampler" ]; then kill "$sampler" 2>/dev/null || true; fi; if [ "$status" -ne 0 ]; then date -u +"box failed %FT%TZ"; fi' EXIT
 cd /workspace/v2d-track-2
 date -u +"box start %FT%TZ"
-BOOTSTRAP_TIERS=" " bash scripts/gpu_bootstrap.sh
+[ ! -f "/workspace/$name.env.sh" ] || source "/workspace/$name.env.sh"
+BOOTSTRAP_TIERS="${BOOTSTRAP_TIERS:- }" bash scripts/gpu_bootstrap.sh
 date -u +"bootstrap done %FT%TZ"
-.venv/bin/python scripts/make_tier2_screen.py --jobs 6
+if [ "${BUILD_SCREEN:-1}" = 1 ]; then .venv/bin/python scripts/make_tier2_screen.py --jobs 6; fi
 date -u +"screen done %FT%TZ"
 (while sleep 60; do
     echo "$(date -u +%T) $(nvidia-smi --query-gpu=index,utilization.gpu,memory.used --format=csv,noheader | tr '\n' ' ')"

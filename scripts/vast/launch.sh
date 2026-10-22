@@ -36,6 +36,11 @@ rsync -az -e "ssh ${ssh_opts[*]}" --exclude '.venv*' --exclude external --exclud
 rsync -az -e "ssh ${ssh_opts[*]}" "$P"/data/denoise_eval/*config.json root@"$host":/workspace/v2d-track-2/data/denoise_eval/
 rsync -az -e "ssh ${ssh_opts[*]}" "$P/scripts/vast/box.sh" root@"$host":/workspace/"$name".sh
 rsync -az -e "ssh ${ssh_opts[*]}" "$D/jobs.txt" root@"$host":/workspace/"$name".jobs
+# Stage explicit run-owned production files despite the general data exclusion.
+if [ -d "$D/payload" ]; then
+    rsync -az -e "ssh ${ssh_opts[*]}" "$D/payload/" root@"$host":/workspace/v2d-track-2/
+fi
+[ ! -f "$D/env.sh" ] || rsync -az -e "ssh ${ssh_opts[*]}" "$D/env.sh" root@"$host":/workspace/"$name.env".sh
 # Restore the frozen run tree before starting any writer on a replacement box.
 if [ -d "$D/pulled/$name" ]; then
     ssh "${ssh_opts[@]}" root@"$host" "mkdir -p /workspace/v2d-track-2/runs/$name"
