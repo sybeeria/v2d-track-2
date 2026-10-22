@@ -1,0 +1,37 @@
+$ PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -B -m unittest discover -s tests -v
+test_dry_run_all_arms_and_bad_checkpoint (test_score_rollout.PilotQueueTest.test_dry_run_all_arms_and_bad_checkpoint) ... ok
+test_partial_evaluation_retries_then_skips_and_recipe_change_rejected (test_score_rollout.PilotQueueTest.test_partial_evaluation_retries_then_skips_and_recipe_change_rejected) ... ok
+test_equal_episode_weight_with_different_lengths (test_score_rollout.ScoreRolloutTest.test_equal_episode_weight_with_different_lengths) ... ok
+test_halfturn_and_quaternion_sign (test_score_rollout.ScoreRolloutTest.test_halfturn_and_quaternion_sign) ... ok
+test_identity_ignores_corrupted_embedded_reference (test_score_rollout.ScoreRolloutTest.test_identity_ignores_corrupted_embedded_reference) ... ok
+test_missing_duplicate_and_invalid_frames_fail (test_score_rollout.ScoreRolloutTest.test_missing_duplicate_and_invalid_frames_fail) ... ok
+test_reference_is_required_and_schema_units_are_checked (test_score_rollout.ScoreRolloutTest.test_reference_is_required_and_schema_units_are_checked) ... ok
+test_three_upstream_references_through_cli (test_score_rollout.ScoreRolloutTest.test_three_upstream_references_through_cli) ... ok
+test_twenty_cm_translation (test_score_rollout.ScoreRolloutTest.test_twenty_cm_translation) ... ok
+/Users/siberia/.t3/projects/v2d-track-2/.venv/lib/python3.11/site-packages/soma/geometry/skeleton_transfer.py:248: UserWarning: Sparse invariant checks are implicitly disabled. Memory errors (e.g. SEGFAULT) will occur when operating on a sparse tensor which violates the invariants, but checks incur performance overhead. To silence this warning, explicitly opt in or out. See `torch.sparse.check_sparse_tensor_invariants.__doc__` for guidance.  (Triggered internally at /Users/runner/work/pytorch/pytorch/aten/src/ATen/Context.cpp:855.)
+  self.sparse_rbf_matrix = torch.sparse_csr_tensor(
+/Users/siberia/.t3/projects/v2d-track-2/.venv/lib/python3.11/site-packages/soma/geometry/skeleton_transfer.py:248: UserWarning: Sparse CSR tensor support is in beta state. If you miss a functionality in the sparse tensor support, please submit a feature request to https://github.com/pytorch/pytorch/issues. (Triggered internally at /Users/runner/work/pytorch/pytorch/aten/src/ATen/SparseCsrTensorImpl.cpp:51.)
+  self.sparse_rbf_matrix = torch.sparse_csr_tensor(
+/Users/siberia/.t3/projects/v2d-track-2/.venv/lib/python3.11/site-packages/torch/jit/_serialization.py:176: FutureWarning: `torch.jit.load` is deprecated. Please switch to `torch.export`.
+  warnings.warn(
+/Users/siberia/.t3/projects/v2d-track-2/.venv/lib/python3.11/site-packages/trimesh/visual/texture.py:277: RuntimeWarning: All-NaN slice encountered
+  result.append(np.nanmedian(masks_nan, axis=0).astype(np.int64))
+/Users/siberia/.t3/projects/v2d-track-2/.venv/lib/python3.11/site-packages/trimesh/visual/texture.py:277: RuntimeWarning: invalid value encountered in cast
+  result.append(np.nanmedian(masks_nan, axis=0).astype(np.int64))
+test_degenerate_alignment_rejected (test_tier3_align.Tier3AlignmentTest.test_degenerate_alignment_rejected) ... ok
+test_folder_export_through_real_soma_reader (test_tier3_align.Tier3AlignmentTest.test_folder_export_through_real_soma_reader) ... ok
+test_frame0_loader_never_requests_a_second_batch (test_tier3_align.Tier3AlignmentTest.test_frame0_loader_never_requests_a_second_batch) ... ok
+test_similarity_noise_and_lever_arm (test_tier3_align.Tier3AlignmentTest.test_similarity_noise_and_lever_arm) ... ok
+
+----------------------------------------------------------------------
+Ran 13 tests in 40.504s
+
+OK
+Warp 1.18.0 initialized:
+   CUDA not enabled in this build
+   Devices:
+     "cpu"      : "arm"
+   Kernel cache:
+     /Users/siberia/Library/Caches/warp/1.18.0
+Module soma.geometry.align_vectors_warp 5f6e29d load on device 'cpu' took 2.11 ms  (cached)
+Module soma.geometry.lbs_warp 202b92a load on device 'cpu' took 0.60 ms  (cached)

@@ -1,0 +1,11 @@
+--- a/v2d_sam2/lib/sam2_utils.py
++++ b/v2d_sam2/lib/sam2_utils.py
+@@ -10,6 +10,8 @@
+ import logging
+ import os
+ import torch
++# Load before Decord codec libraries: the reverse order segfaults in connected components.
++from sam2 import _C as _sam2_cuda
+ from collections import OrderedDict
+ from collections.abc import Sequence
+ from PIL import Image

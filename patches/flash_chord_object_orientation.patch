@@ -1,0 +1,315 @@
+diff --git a/robotic_grounding/flash_chord/src/flash_chord/configs/curriculum/recon_body_flash_sac.yaml b/robotic_grounding/flash_chord/src/flash_chord/configs/curriculum/recon_body_flash_sac.yaml
+index 44d1fe3..80b5198 100644
+--- a/robotic_grounding/flash_chord/src/flash_chord/configs/curriculum/recon_body_flash_sac.yaml
++++ b/robotic_grounding/flash_chord/src/flash_chord/configs/curriculum/recon_body_flash_sac.yaml
+@@ -18,6 +18,7 @@ stages:
+       pelvis_orientation: 1.0
+       body_joint_position: 5.0
+       object_position: 1.0
++      object_orientation: ${objective.object_orientation_weight}
+       progress: 1.0
+       palm_position: 1.0
+       palm_orientation: 1.0
+diff --git a/robotic_grounding/flash_chord/src/flash_chord/configs/curriculum/recon_body_ppo.yaml b/robotic_grounding/flash_chord/src/flash_chord/configs/curriculum/recon_body_ppo.yaml
+index af4b420..2d873e3 100644
+--- a/robotic_grounding/flash_chord/src/flash_chord/configs/curriculum/recon_body_ppo.yaml
++++ b/robotic_grounding/flash_chord/src/flash_chord/configs/curriculum/recon_body_ppo.yaml
+@@ -20,6 +20,7 @@ stages:
+       pelvis_orientation: 1.0
+       body_joint_position: 5.0
+       object_position: 1.0
++      object_orientation: ${objective.object_orientation_weight}
+       progress: 1.0
+       palm_position: 1.0
+       palm_orientation: 1.0
+diff --git a/robotic_grounding/flash_chord/src/flash_chord/configs/objective/recon_body.yaml b/robotic_grounding/flash_chord/src/flash_chord/configs/objective/recon_body.yaml
+index c25a5c6..e95862f 100644
+--- a/robotic_grounding/flash_chord/src/flash_chord/configs/objective/recon_body.yaml
++++ b/robotic_grounding/flash_chord/src/flash_chord/configs/objective/recon_body.yaml
+@@ -7,6 +7,7 @@ pelvis_position_weight: 1.0
+ pelvis_orientation_weight: 1.0
+ body_joint_position_weight: 5.0
+ object_position_weight: 1.0
++object_orientation_weight: 0.0
+ progress_weight: 1.0
+ palm_position_weight: 1.0
+ palm_orientation_weight: 1.0
+@@ -15,6 +16,7 @@ pelvis_position_std: 0.3
+ pelvis_orientation_std: 0.4
+ body_joint_position_std: 1.0
+ object_position_std: 0.2
++object_orientation_std: 0.4
+ palm_position_std: 0.2
+ palm_orientation_std: 0.4
+ soft_joint_limit_factor: 0.9
+diff --git a/robotic_grounding/flash_chord/src/flash_chord/objectives/recon_body.py b/robotic_grounding/flash_chord/src/flash_chord/objectives/recon_body.py
+index 78fbb60..55ebaab 100644
+--- a/robotic_grounding/flash_chord/src/flash_chord/objectives/recon_body.py
++++ b/robotic_grounding/flash_chord/src/flash_chord/objectives/recon_body.py
+@@ -36,8 +36,9 @@ RECON_BODY_OBJECTIVE_TERM_NAMES = (
+     "palm_position",
+     "palm_orientation",
+     "force_closure",
++    "object_orientation",
+ )
+-_RECON_BODY_OBJECTIVE_TERM_COUNT = wp.constant(12)
++_RECON_BODY_OBJECTIVE_TERM_COUNT = wp.constant(13)
+ 
+ 
+ @dataclass(frozen=True)
+@@ -52,6 +53,7 @@ class ReconBodyObjectiveConfig:
+     pelvis_orientation_weight: float = 1.0
+     body_joint_position_weight: float = 5.0
+     object_position_weight: float = 1.0
++    object_orientation_weight: float = 0.0
+     progress_weight: float = 1.0
+     palm_position_weight: float = 1.0
+     palm_orientation_weight: float = 1.0
+@@ -60,6 +62,7 @@ class ReconBodyObjectiveConfig:
+     pelvis_orientation_std: float = 0.4
+     body_joint_position_std: float = 1.0
+     object_position_std: float = 0.2
++    object_orientation_std: float = 0.4
+     palm_position_std: float = 0.2
+     palm_orientation_std: float = 0.4
+     soft_joint_limit_factor: float = 0.9
+@@ -76,6 +79,7 @@ class ReconBodyObjectiveConfig:
+             self.pelvis_orientation_std,
+             self.body_joint_position_std,
+             self.object_position_std,
++            self.object_orientation_std,
+             self.palm_position_std,
+             self.palm_orientation_std,
+             self.force_closure_min_support,
+@@ -90,6 +94,7 @@ class ReconBodyObjectiveConfig:
+                 self.pelvis_orientation_std,
+                 self.body_joint_position_std,
+                 self.object_position_std,
++                self.object_orientation_std,
+                 self.palm_position_std,
+                 self.palm_orientation_std,
+             )
+@@ -118,6 +123,7 @@ class ReconBodyObjectiveConfig:
+             self.palm_position_weight,
+             self.palm_orientation_weight,
+             self.force_closure_weight,
++            self.object_orientation_weight,
+         )
+ 
+     def build(
+@@ -208,6 +214,7 @@ def compose_recon_body_objective(
+     soft_upper: wp.array(dtype=wp.float32),
+     object_body_id: int,
+     object_target_pos_w: wp.array(dtype=wp.vec3),
++    object_target_quat_w: wp.array(dtype=wp.quat),
+     pelvis_body_id: int,
+     num_frames: int,
+     bodies_per_world: int,
+@@ -218,6 +225,7 @@ def compose_recon_body_objective(
+     pelvis_orientation_std: float,
+     body_joint_position_std: float,
+     object_position_std: float,
++    object_orientation_std: float,
+     palm_position_std: float,
+     palm_orientation_std: float,
+     weights: wp.array(dtype=wp.float32),
+@@ -276,6 +284,11 @@ def compose_recon_body_objective(
+     object_position = wp.transform_get_translation(body_q[body_base + object_body_id])
+     object_error = object_position - object_target_pos_w[world]
+     terms[term_base + 7] = wp.exp(-wp.dot(object_error, object_error) / (object_position_std * object_position_std))
++    object_orientation = wp.normalize(wp.transform_get_rotation(body_q[body_base + object_body_id]))
++    object_orientation_error = quat_geodesic_angle(object_orientation, wp.normalize(object_target_quat_w[world]))
++    terms[term_base + 12] = wp.exp(
++        -(object_orientation_error * object_orientation_error) / (object_orientation_std * object_orientation_std)
++    )
+ 
+     denominator = num_frames - 1 - episode_start_frame[world]
+     progress = float(1.0)  # noqa: UP018
+@@ -540,6 +553,7 @@ class ReconBodyObjective:
+                 self.soft_upper,
+                 self.object_body_id,
+                 self.command.body_target_pos_w,
++                self.command.body_target_quat_w,
+                 self.pelvis_body_id,
+                 self.num_frames,
+                 self.bodies_per_world,
+@@ -550,6 +564,7 @@ class ReconBodyObjective:
+                 self.config.pelvis_orientation_std,
+                 self.config.body_joint_position_std,
+                 self.config.object_position_std,
++                self.config.object_orientation_std,
+                 self.config.palm_position_std,
+                 self.config.palm_orientation_std,
+                 self.weights,
+diff --git a/robotic_grounding/flash_chord/tests/objectives/test_recon_body_objective.py b/robotic_grounding/flash_chord/tests/objectives/test_recon_body_objective.py
+index 1dbd215..8e7e29b 100644
+--- a/robotic_grounding/flash_chord/tests/objectives/test_recon_body_objective.py
++++ b/robotic_grounding/flash_chord/tests/objectives/test_recon_body_objective.py
+@@ -3,12 +3,16 @@
+ """Analytic BodyRecon objective and force-closure checks."""
+ 
+ import numpy as np
++import pytest
+ 
+ 
+-def test_recon_body_objective_terms_match_analytic_values():
++@pytest.mark.parametrize("angle", [0.0, 0.4, np.pi / 2, np.pi, 3 * np.pi / 2])
++@pytest.mark.parametrize("sign", [1.0, -1.0])
++@pytest.mark.parametrize("orientation_weight", [0.0, 1.0])
++def test_recon_body_objective_terms_match_analytic_values(angle, sign, orientation_weight):
+     import warp as wp
+ 
+-    from flash_chord.objectives.recon_body import compose_recon_body_objective
++    from flash_chord.objectives.recon_body import RECON_BODY_OBJECTIVE_TERM_NAMES, compose_recon_body_objective
+ 
+     with wp.ScopedDevice("cpu"):
+         reference_joint_q = np.zeros((11, 10), dtype=np.float32)
+@@ -16,7 +20,7 @@ def test_recon_body_objective_terms_match_analytic_values():
+         wrist_position = np.tile(np.asarray([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]), (11, 1, 1))
+         wrist_quat = np.zeros((11, 2, 4), dtype=np.float32)
+         wrist_quat[..., 3] = 1.0
+-        terms = wp.zeros(12, dtype=wp.float32)
++        terms = wp.zeros(len(RECON_BODY_OBJECTIVE_TERM_NAMES), dtype=wp.float32)
+         score = wp.zeros(1, dtype=wp.float32)
+         wp.launch(
+             compose_recon_body_objective,
+@@ -27,7 +31,10 @@ def test_recon_body_objective_terms_match_analytic_values():
+                         wp.transform_identity(),
+                         wp.transform(wp.vec3(1.0, 0.0, 0.0), wp.quat_identity()),
+                         wp.transform(wp.vec3(0.0, 1.0, 0.0), wp.quat_identity()),
+-                        wp.transform(wp.vec3(2.0, 0.0, 0.0), wp.quat_identity()),
++                        wp.transform(
++                            wp.vec3(2.0, 0.0, 0.0),
++                            wp.quat(0.0, 0.0, np.sin(angle / 2), np.cos(angle / 2)),
++                        ),
+                     ],
+                     dtype=wp.transform,
+                 ),
+@@ -51,6 +58,7 @@ def test_recon_body_objective_terms_match_analytic_values():
+                 wp.array([1.0, 1.0], dtype=wp.float32),
+                 3,
+                 wp.array([[2.0, 0.0, 0.0]], dtype=wp.vec3),
++                wp.array([[0.0, 0.0, 0.0, sign]], dtype=wp.quat),
+                 0,
+                 11,
+                 4,
+@@ -61,17 +69,30 @@ def test_recon_body_objective_terms_match_analytic_values():
+                 0.4,
+                 1.0,
+                 0.2,
++                0.4,
+                 0.2,
+                 0.4,
+-                wp.ones(12, dtype=wp.float32),
++                wp.array([1.0] * 12 + [orientation_weight], dtype=wp.float32),
+                 0.02,
+             ],
+             outputs=[terms, score],
+         )
+ 
+     expected = np.asarray([0.0, 3.0, 2.0, 0.0, 1.0, 1.0, 1.0, 1.0, 0.5, 1.0, 1.0, 0.25])
+-    np.testing.assert_allclose(terms.numpy(), expected, atol=1.0e-6)
+-    np.testing.assert_allclose(score.numpy(), [expected.sum() * 0.02], atol=1.0e-6)
++    shortest_angle = min(angle, 2 * np.pi - angle)
++    orientation_reward = np.exp(-((shortest_angle / 0.4) ** 2))
++    np.testing.assert_allclose(terms.numpy(), [*expected, orientation_reward], rtol=2.0e-5, atol=1.0e-27)
++    np.testing.assert_allclose(
++        score.numpy(), [0.02 * (expected.sum() + orientation_weight * orientation_reward)], atol=1.0e-6
++    )
++
++
++@pytest.mark.parametrize("std", [0.0, -0.4, np.inf, np.nan])
++def test_object_orientation_std_must_be_finite_and_positive(std):
++    from flash_chord.objectives.recon_body import ReconBodyObjectiveConfig
++
++    with pytest.raises(ValueError):
++        ReconBodyObjectiveConfig(object_orientation_std=std)
+ 
+ 
+ def test_force_closure_uses_binary_labels_and_maximum_support_across_bodies():
+diff --git a/robotic_grounding/flash_chord/tests/test_configuration.py b/robotic_grounding/flash_chord/tests/test_configuration.py
+index 996c5b4..0549858 100644
+--- a/robotic_grounding/flash_chord/tests/test_configuration.py
++++ b/robotic_grounding/flash_chord/tests/test_configuration.py
+@@ -116,6 +116,44 @@ def test_force_closure_reward_configs_remain_available():
+     assert g1.objective.force_closure_min_support == 0.01
+ 
+ 
++@pytest.mark.parametrize(
++    "root,experiment", [("train_flash_sac", "g1_recon_body_flash_sac"), ("train", "g1_recon_body_ppo")]
++)
++@pytest.mark.parametrize("weight", [0.0, 1.0])
++def test_recon_body_orientation_weight_reaches_every_curriculum_stage(root, experiment, weight):
++    from flash_chord.lifecycle.curriculum import FixedCurriculum
++    from flash_chord.objectives.recon_body import RECON_BODY_OBJECTIVE_TERM_NAMES, ReconBodyObjectiveConfig
++
++    overrides = [f"experiment={experiment}", _PARQUET]
++    if weight:
++        overrides.append(f"objective.object_orientation_weight={weight}")
++    config = compose_config(root, overrides)
++    objective = instantiate_typed(config.env.objective, ReconBodyObjectiveConfig)
++    curriculum = instantiate_typed(config.curriculum, FixedCurriculum)
++
++    assert objective.object_orientation_weight == weight
++    assert objective.object_orientation_std == 0.4
++    assert len(curriculum.stages) == 9
++    for stage in curriculum.stages:
++        weights = stage.weights_for(RECON_BODY_OBJECTIVE_TERM_NAMES)
++        assert weights[RECON_BODY_OBJECTIVE_TERM_NAMES.index("object_orientation")] == weight
++
++
++def test_recon_body_orientation_stage_weight_can_override_the_shared_default():
++    config = compose_config(
++        "train_flash_sac",
++        [
++            "experiment=g1_recon_body_flash_sac",
++            _PARQUET,
++            "objective.object_orientation_weight=1.0",
++            "curriculum.stages.4.objective_weights.object_orientation=0.25",
++        ],
++    )
++    assert [stage.objective_weights.object_orientation for stage in config.curriculum.stages] == [
++        1.0, 1.0, 1.0, 1.0, 0.25, 1.0, 1.0, 1.0, 1.0
++    ]
++
++
+ def test_task_parquet_is_required_in_the_release_config():
+     config = compose_config("train_flash_sac", ["experiment=sharpa_flash_sac"])
+     with pytest.raises(MissingMandatoryValue):
+diff --git a/robotic_grounding/flash_chord/tests/utils/test_quat.py b/robotic_grounding/flash_chord/tests/utils/test_quat.py
+index 18f4ed7..b532c64 100644
+--- a/robotic_grounding/flash_chord/tests/utils/test_quat.py
++++ b/robotic_grounding/flash_chord/tests/utils/test_quat.py
+@@ -24,3 +24,32 @@ def test_wxyz_to_rotvec_known_values():
+     assert np.allclose(wxyz_to_rotvec([h, 0.0, 0.0, h]), [0.0, 0.0, np.pi / 2], atol=1e-6)
+     # batched
+     assert wxyz_to_rotvec(np.tile([1.0, 0.0, 0.0, 0.0], (3, 1))).shape == (3, 3)
++
++
++def test_warp_geodesic_angle_is_shortest_and_sign_invariant():
++    import warp as wp
++
++    from flash_chord.utils.quat import quat_geodesic_angle
++
++    @wp.kernel
++    def measure_angles(a: wp.array(dtype=wp.quat), b: wp.array(dtype=wp.quat), angles: wp.array(dtype=float)):
++        i = wp.tid()
++        angles[i] = quat_geodesic_angle(wp.normalize(a[i]), wp.normalize(b[i]))
++
++    angles = np.asarray([0.0, 0.4, np.pi / 2, np.pi, 3 * np.pi / 2])
++    quats = np.zeros((len(angles), 4), dtype=np.float32)
++    quats[:, 2] = np.sin(angles / 2)
++    quats[:, 3] = np.cos(angles / 2)
++    quats = np.concatenate([quats, -quats])
++    targets = np.tile([0.0, 0.0, 0.0, 1.0], (len(quats), 1))
++    with wp.ScopedDevice("cpu"):
++        result = wp.zeros(len(quats), dtype=float)
++        wp.launch(
++            measure_angles,
++            dim=len(quats),
++            inputs=[wp.array(quats, dtype=wp.quat), wp.array(targets, dtype=wp.quat)],
++            outputs=[result],
++        )
++    expected = np.minimum(angles, 2 * np.pi - angles)
++    np.testing.assert_allclose(result.numpy(), np.tile(expected, 2), atol=1.0e-6)
++    np.testing.assert_array_equal(result.numpy()[: len(angles)], result.numpy()[len(angles) :])

@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# Usage: scripts/vast/launch.sh RUN_DIR INSTANCE_ID
+# Copies the project (no data/external/venvs/runs) plus the screen's seed configs to the box, installs
+# scripts/vast/box.sh as /workspace/<run>.sh and RUN_DIR/jobs.txt as /workspace/<run>.jobs, where <run> is
+# RUN_DIR's name (plus optional RUN_DIR/pre.sh and post.sh hooks as /workspace/<run>.pre.sh and .post.sh), and
+# starts the box script detached (log: /workspace/<run>.log). Records the host in RUN_DIR/host.
+set -euo pipefail
+D=$(cd "${1:?run dir}" && pwd) id=${2:?instance id}
+P=$(cd "$(dirname "$0")/../.." && pwd)
+name=$(basename "$D")
+read -r host port < <(vastai show instance "$id" --raw | python3 -I -c "import json,sys; o=json.load(sys.stdin); print(o['public_ipaddr'].strip(), o['ports']['22/tcp'][0]['HostPort'])")
+echo "$id $host $port" > "$D/host"
+ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=30 -i "$HOME/.ssh/id_ed25519" -p "$port")
+ssh "${ssh_opts[@]}" root@"$host" "mkdir -p /workspace/v2d-track-2/data/denoise_eval" 2>&1 | grep -v "Welcome\|Have fun" || true
+rsync -az -e "ssh ${ssh_opts[*]}" --exclude '.venv*' --exclude external --exclude data --exclude runs \
+    --exclude '__pycache__' --exclude .git "$P/" root@"$host":/workspace/v2d-track-2/
+rsync -az -e "ssh ${ssh_opts[*]}" "$P"/data/denoise_eval/*config.json root@"$host":/workspace/v2d-track-2/data/denoise_eval/
+rsync -az -e "ssh ${ssh_opts[*]}" "$P/scripts/vast/box.sh" root@"$host":/workspace/"$name".sh
+rsync -az -e "ssh ${ssh_opts[*]}" "$D/jobs.txt" root@"$host":/workspace/"$name".jobs
+# Restore the frozen run tree before starting any writer on a replacement box.
+if [ -d "$D/pulled/$name" ]; then
+    ssh "${ssh_opts[@]}" root@"$host" "mkdir -p /workspace/v2d-track-2/runs/$name"
+    rsync -az -e "ssh ${ssh_opts[*]}" "$D/pulled/$name/" root@"$host":/workspace/v2d-track-2/runs/"$name"/
+fi
+for hook in pre post; do
+    [ ! -f "$D/$hook.sh" ] || rsync -az -e "ssh ${ssh_opts[*]}" "$D/$hook.sh" root@"$host":/workspace/"$name.$hook".sh
+done
+ssh "${ssh_opts[@]}" root@"$host" "setsid nohup bash /workspace/$name.sh > /workspace/$name.log 2>&1 < /dev/null & echo launched" 2>&1 | grep -v "Welcome\|Have fun"

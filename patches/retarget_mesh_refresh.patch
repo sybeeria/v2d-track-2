@@ -1,0 +1,14 @@
+--- a/robotic_grounding/scripts/retarget/soma_to_g1.py
++++ b/robotic_grounding/scripts/retarget/soma_to_g1.py
+@@ -49,10 +49,8 @@
+ 
+ 
+ def _convert_glb_to_obj(glb_path: Path, dst_dir: Path) -> Path:
+-    """Return a cached flat OBJ, creating it from the source GLB if needed."""
++    """Export the current GLB, preserving its object-local scale and origin."""
+     obj_path = dst_dir / "textured_mesh.obj"
+-    if obj_path.is_file():
+-        return obj_path
+ 
+     dst_dir.mkdir(parents=True, exist_ok=True)
+     mesh = trimesh.load(glb_path, force="scene")

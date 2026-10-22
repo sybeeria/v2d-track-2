@@ -1,0 +1,4 @@
+# 10M throughput-only arms (X4): stock absolute curriculum, so these never leave the assisted stages.
+X4-control training.total_environment_steps=10002432 training.checkpoint.save_interval_environment_steps=10002432
+X4-w4096-u8 training.total_environment_steps=10002432 training.checkpoint.save_interval_environment_steps=10002432 scene.world_count=4096 training.updates_per_collection=8.0
+X4-u2 training.total_environment_steps=10002432 training.checkpoint.save_interval_environment_steps=10002432 training.updates_per_collection=2.0
