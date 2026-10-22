@@ -67,12 +67,25 @@ class IntegrityTests(unittest.TestCase):
             work = Path(tmp); manifest, own, clean = self.manifest(work)
             out = work/'out'; arm = out/'T2C-contact'; result_dir = arm/'tier3_raw/evaluation/fixture/49999872'
             result_dir.mkdir(parents=True)
-            from pilot_queue import read_inputs, read_arms
+            from pilot_queue import read_inputs, read_arms, evaluator_identity, FLASH
             refs = read_inputs(manifest, None, ['tier3_raw'])
             overrides, _ = read_arms(ROOT/'scripts/pilot_arms.txt', [49999872])['T2C-contact']
             (arm/'recipe.json').write_text(json.dumps({'schema_version':2, 'overrides':overrides, 'references':refs}))
             report = {'episodes':[{'reference':str(clean.resolve()), 'rollout':str((result_dir/'trajectory.parquet').resolve())}],
                       'mean':{'AUC':1., 'SP-SR':1., 'MP-SR':1., 'MPPE':0.}}
+            checkpoint = arm/'tier3_raw/train/fixture/policy_49999872.safetensors'
+            checkpoint.parent.mkdir(parents=True); checkpoint.write_bytes(b'fixture checkpoint')
+            trajectory = result_dir/'trajectory.parquet'; trajectory.write_bytes(b'fixture rollout')
+            metrics = result_dir/'metrics.json'; metrics.write_text('{}')
+            job = refs['tier3_raw/fixture']
+            identity = {'checkpoint_sha256':record(checkpoint)['sha256'],
+                        'evaluator':evaluator_identity(FLASH), 'input':'tier3_raw',
+                        'training_reference':job['training'], 'scoring_reference':job['scoring'],
+                        'support':job['support'], 'trajectory_sha256':record(trajectory)['sha256'],
+                        'metrics_sha256':record(metrics)['sha256']}
+            (result_dir/'evaluation.done.json').write_text(json.dumps(identity))
+            report['episodes'][0].update(reference_sha256=record(own)['sha256'],
+                                         rollout_sha256=record(trajectory)['sha256'])
             scores = result_dir/'scores.json'; scores.write_text(json.dumps(report))
             result = subprocess.run(self.command(manifest, out, '--summarize-only'), capture_output=True, text=True)
             self.assertNotEqual(result.returncode, 0, 'clean scores entered Tier 3 summary:\n'+result.stdout)

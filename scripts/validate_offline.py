@@ -1,19 +1,30 @@
 """Validate a packed Track 2 CSV offline, without contacting Kaggle.
 
-Runs the kit uploader's own validator, then rejects checkpoint mixing within an episode, which the host
-scorer rejects but the stock uploader misses (it only checks when an episode_index column exists).
-The kit files stay unmodified so the packer/uploader hashes stamped into each row match KIT_MANIFEST.json.
+Checks every kit file against KIT_MANIFEST.json, runs the kit uploader's own validator, then rejects checkpoint
+mixing within an episode, which the host scorer rejects but the stock uploader misses (it only checks when an
+episode_index column exists), and stamped packer/uploader hashes that don't name the code that wrote the rows.
 """
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
 
 ROW_EPISODE = r'^track_\d+/e(\d{6})/w\d{3}/f\d{6}/o\d+$'
+PACK_NO_CLEAN = Path(__file__).resolve().with_name('pack_no_clean.py')
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def validate(kit, csv, track):
+    manifest = json.loads((kit / 'KIT_MANIFEST.json').read_text())['files']
+    for name, expected in manifest.items():
+        path = kit / name
+        if not path.is_file() or digest(path) != expected:
+            raise SystemExit(f'{path}: differs from KIT_MANIFEST.json')
     sys.path.insert(0, str(kit))
     from submit.v2d_submit import validate_submission
     frame = validate_submission(csv, track, json.loads((kit / 'config/tracks.json').read_text()))
@@ -24,6 +35,11 @@ def validate(kit, csv, track):
     mixed = sorted(counts[counts > 1].index)
     if mixed:
         raise SystemExit(f"{csv}: 'checkpoint_sha256' must be identical within each episode; episode(s) {mixed[:5]}")
+    # Each row must name the code that wrote it: the kit packer for Tier 1, our no-clean builder for Tiers 2/3.
+    packer = manifest['tools/pack_submission.py'] if track == 'track_2_tier1' else digest(PACK_NO_CLEAN)
+    for column, expected in [('packer_script_sha256', packer), ('uploader_script_sha256', manifest['submit/v2d_submit.py'])]:
+        if not frame[column].astype(str).str.strip().str.lower().eq(expected).all():
+            raise SystemExit(f'{csv}: {column} is not {expected}, the code that packs {track}')
     return frame
 
 

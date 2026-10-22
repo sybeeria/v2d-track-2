@@ -20,8 +20,23 @@ os.environ['WATCHDOG_LOCKED'] = sys.argv[2]
 os.execvp('bash', ['bash', sys.argv[1], *sys.argv[3:]])
 PYWATCHLOCK
 fi
+# Bound wall time as well as socket inactivity: a live remote process can hang forever.
+bounded() {
+    python3 -I - "$@" <<'PYBOUND'
+import os, signal, subprocess, sys
+timeout = float(os.environ.get('WATCHDOG_COMMAND_TIMEOUT_SECONDS', '120'))
+with subprocess.Popen(sys.argv[1:], start_new_session=True, close_fds=False) as process:
+    try:
+        sys.exit(process.wait(timeout=timeout))
+    except subprocess.TimeoutExpired:
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait()
+        print(f'watchdog command timed out after {timeout}s: {sys.argv[1]}', file=sys.stderr)
+        sys.exit(124)
+PYBOUND
+}
 ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=2 -i "$HOME/.ssh/id_ed25519" -p "$port")
-read -r start rate < <(vastai show instance "$id" --raw | python3 -I -c "import json,sys,math; o=json.load(sys.stdin); s,r=float(o['start_date']),float(o['dph_total']); assert math.isfinite(s) and s>0 and math.isfinite(r) and r>0; print(s,r)") || {
+read -r start rate < <(bounded vastai show instance "$id" --raw | python3 -I -c "import json,sys,math; o=json.load(sys.stdin); s,r=float(o['start_date']),float(o['dph_total']); assert math.isfinite(s) and s>0 and math.isfinite(r) and r>0; print(s,r)") || {
     echo "cannot read valid instance start/rate; watchdog not armed" >&2; exit 1;
 }
 python3 -I -c "import sys,math; c,f=map(float,sys.argv[1:]); assert all(math.isfinite(x) and x>=0 for x in (c,f))" "$cap" "$floor" || exit 2
@@ -31,10 +46,10 @@ mkdir -p "$D/pulled"
 log() { echo "$(date -u +%FT%TZ) $*" >> "$D/watchdog.log"; }
 
 pull() {
-    rsync -az --timeout=90 -e "ssh ${ssh_opts[*]}" --exclude '.*.tmp' --exclude 'state_*.safetensors' --exclude 'replay_*.safetensors' --exclude '*.ckpt' --exclude '*.pt' \
+    bounded rsync -az --timeout=90 -e "ssh ${ssh_opts[*]}" --exclude '.*.tmp' --exclude 'state_*.safetensors' --exclude 'replay_*.safetensors' --exclude '*.ckpt' --exclude '*.pt' \
         root@"$host":/workspace/v2d-track-2/runs/"$name" "$D/pulled/" 2>> "$D/watchdog.log" || return 1
     # Actors are small; compact learner state dominates disk. Keep two immutable state generations per policy.
-    if ! ssh -n "${ssh_opts[@]}" root@"$host" "python3 - /workspace/v2d-track-2/runs/$name <<'PYSTATES'
+    if ! bounded ssh -n "${ssh_opts[@]}" root@"$host" "python3 - /workspace/v2d-track-2/runs/$name <<'PYSTATES'
 from pathlib import Path
 import re, sys
 root = Path(sys.argv[1])
@@ -47,7 +62,7 @@ for directory in sorted(groups):
     for _, path in sorted(groups[directory])[-2:]:
         print(path.relative_to(root).as_posix())
 PYSTATES" > "$D/.state-files" 2>> "$D/watchdog.log"; then return 1; fi
-    rsync -az --timeout=90 -e "ssh ${ssh_opts[*]}" --files-from="$D/.state-files" \
+    bounded rsync -az --timeout=90 -e "ssh ${ssh_opts[*]}" --files-from="$D/.state-files" \
         root@"$host":/workspace/v2d-track-2/runs/"$name"/ "$D/pulled/$name/" 2>> "$D/watchdog.log" || return 1
     python3 -I - "$D/pulled/$name" "$D/.state-files" <<'PYPRUNE' || return 1
 from pathlib import Path
@@ -59,7 +74,7 @@ for parent in {p.parent for p in keep}:
         if re.fullmatch(r'state_[0-9]+\.safetensors', path.name) and path.relative_to(root) not in keep:
             path.unlink()
 PYPRUNE
-    rsync -az --timeout=90 -e "ssh ${ssh_opts[*]}" root@"$host":'/workspace/*.log' "$D/pulled/" 2>> "$D/watchdog.log"
+    bounded rsync -az --timeout=90 -e "ssh ${ssh_opts[*]}" root@"$host":'/workspace/*.log' "$D/pulled/" 2>> "$D/watchdog.log"
 }
 
 # destroy REASON [hard]. Soft reasons keep the instance when it cannot be stopped or backed up and retry next
@@ -68,7 +83,7 @@ PYPRUNE
 destroy() {
     local hard=${2:-}
     # A dead parent can leave a live trainer; stop its entire setsid group on every exit path.
-    if ! ssh -n "${ssh_opts[@]}" root@"$host" "
+    if ! bounded ssh -n "${ssh_opts[@]}" root@"$host" "
             read -r pid < /workspace/$name.pid || exit 1
             case \"\$pid\" in ''|*[!0-9]*) exit 1;; esac
             [ \"\$pid\" -gt 1 ] || exit 1
@@ -83,7 +98,7 @@ destroy() {
         [ -n "$hard" ] || return 1
         echo "$1" > "$D/BACKUP_FAILED"
     fi
-    if ! vastai destroy instance "$id" -y >> "$D/watchdog.log" 2>&1; then
+    if ! bounded vastai destroy instance "$id" -y >> "$D/watchdog.log" 2>&1; then
         log "destroy failed ($1); retrying next cycle"; return 1
     fi
     log "destroy requested for instance $id ($1)"; echo "$1" > "$D/STOPPED"
@@ -96,13 +111,13 @@ progress_since=$(date +%s)
 log "watchdog start id=$id rate=$rate cap=$cap floor=$floor"
 while true; do
     spend=$(python3 -I -c "import time; print(max(0,time.time()-$start)/3600*$rate)")
-    credit=$(vastai show user --raw 2>/dev/null | python3 -I -c "import json,sys; print(float(json.load(sys.stdin)['credit']))" 2>/dev/null)
-    state=$(ssh -n "${ssh_opts[@]}" root@"$host" "
+    credit=$(bounded vastai show user --raw 2>/dev/null | python3 -I -c "import json,sys; print(float(json.load(sys.stdin)['credit']))" 2>/dev/null)
+    state=$(bounded ssh -n "${ssh_opts[@]}" root@"$host" "
         if grep -q '^box done' /workspace/$name.log; then echo done
         elif grep -q '^box failed' /workspace/$name.log; then echo failed
         elif pgrep -f '[/]workspace/$name.sh' > /dev/null; then echo running
         else echo dead; fi" 2>/dev/null | tail -1)
-    ssh -n "${ssh_opts[@]}" root@"$host" "
+    bounded ssh -n "${ssh_opts[@]}" root@"$host" "
         grep -E '^(box|bootstrap|screen) ' /workspace/$name.log | tail -1
         grep -E '^GPU [0-9]+: ' /workspace/$name.log | tail -2
         for f in \$(ls -t \$(find /workspace/v2d-track-2/runs/$name -name train.log 2>/dev/null) 2>/dev/null | head -2); do
@@ -110,12 +125,12 @@ while true; do
         tail -1 /workspace/gpu_samples.log 2>/dev/null" > "$D/status.txt" 2>/dev/null
     log "state=${state:-unreachable} spend=\$$spend credit=\$${credit:-?} $(tr '\n' '|' < "$D/status.txt" | cut -c1-400)"
     grace=5400; [ ! -e "$D/KEEP" ] || grace=0
-    ssh -n "${ssh_opts[@]}" root@"$host" "echo $deadline $grace > /workspace/$name.deadline.tmp && mv /workspace/$name.deadline.tmp /workspace/$name.deadline &&
+    bounded ssh -n "${ssh_opts[@]}" root@"$host" "echo $deadline $grace > /workspace/$name.deadline.tmp && mv /workspace/$name.deadline.tmp /workspace/$name.deadline &&
         { setsid nohup bash /workspace/v2d-track-2/scripts/vast/deadman.sh $name >> /workspace/$name.deadman.log 2>&1 < /dev/null & }" \
         >> "$D/watchdog.log" 2>&1 || log "cannot arm box deadman"
     pull
     if [ "$state" = running ]; then
-        active=$(ssh -n "${ssh_opts[@]}" root@"$host" "python3 - /workspace/v2d-track-2/runs/$name <<'PYJOBS'
+        active=$(bounded ssh -n "${ssh_opts[@]}" root@"$host" "python3 - /workspace/v2d-track-2/runs/$name <<'PYJOBS'
 import json, sys
 from pathlib import Path
 root = Path(sys.argv[1]).resolve()
@@ -156,7 +171,7 @@ temporary.write_text(json.dumps(current)); temporary.replace(path)
 print("stalled" if stalled else "active")' "$D/job-progress-$id.json" "$(date +%s)")
             if [ "$stalled" = stalled ] && [ ! -e "$D/KEEP" ]; then destroy "job no progress for 60 min"; fi
         fi
-        progress=$(ssh -n "${ssh_opts[@]}" root@"$host" "
+        progress=$(bounded ssh -n "${ssh_opts[@]}" root@"$host" "
             grep -E '^(box|bootstrap|screen|GPU [0-9]+:) ' /workspace/$name.log
             find /workspace/v2d-track-2/runs/$name -name train.log -exec sh -c 'grep -a \"^training progress\" \"\$1\" | tail -1' sh {} \;
             find /workspace/v2d-track-2/runs/$name -type f \( -name 'policy_*.safetensors' -o -name scores.json -o -name metrics.json \) -printf '%p %T@ %s\n'

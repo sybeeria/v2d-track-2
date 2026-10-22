@@ -76,7 +76,9 @@ def read_inputs(path, sequences, inputs):
                 raise ValueError(f'{sequence}: unknown input {label!r}')
             arm = entry['arms'][label]
             source = (ROOT / arm['training_reference']['path']).resolve()
-            if tier3 and mode == 'self' and 'tier_1_multiview_caption' in source.parts:
+            if tier3 and mode == 'self' and (
+                    'tier_1_multiview_caption' in source.parts
+                    or source.is_relative_to((ROOT / 'data/work/tier1').resolve())):
                 raise ValueError('self-scoring cannot use a Tier 1 training reference')
             training = checked_record(arm['training_reference'])
             scoring = checked_record(arm['clean_scoring_reference'])
@@ -142,7 +144,9 @@ def summary(candidates, out):
         report = json.loads(scores.read_text())
         episodes = report.get('episodes', [])
         if (len(episodes) != 1 or Path(episodes[0]['reference']).resolve() != Path(reference).resolve()
-                or Path(episodes[0]['rollout']).resolve() != trajectory.resolve()):
+                or Path(episodes[0]['rollout']).resolve() != trajectory.resolve()
+                or episodes[0].get('reference_sha256') != hashlib.sha256(Path(reference).read_bytes()).hexdigest()
+                or episodes[0].get('rollout_sha256') != hashlib.sha256(trajectory.read_bytes()).hexdigest()):
             raise ValueError(f'{scores}: scores do not match the frozen reference and rollout')
         metrics = report['mean']
         if set(metrics) != set(METRICS) or not all(math.isfinite(v) for v in metrics.values()):
@@ -178,8 +182,6 @@ def run_sequence(job, arm_dir, overrides, total, args, python, pack_python, flas
         trajectory, metrics = result / 'trajectory.parquet', result / 'metrics.json'
         done, scores = result / 'evaluation.done.json', result / 'scores.json'
         candidates.append((arm_dir.name, input_name, sequence, step, scores, job['scoring']['path'], trajectory))
-        if args.summarize_only:
-            continue
         if not args.dry_run and not nonempty(checkpoint):
             raise FileNotFoundError(f'missing requested checkpoint: {checkpoint}')
         identity = None if args.dry_run else {
@@ -187,11 +189,18 @@ def run_sequence(job, arm_dir, overrides, total, args, python, pack_python, flas
             'evaluator': evaluator,
             'input': input_name, 'training_reference': job['training'],
             'scoring_reference': job['scoring'], 'support': job['support']}
+        sealed_identity = None if args.dry_run or not (nonempty(trajectory) and nonempty(metrics)) else {
+            **identity, 'trajectory_sha256': hashlib.sha256(trajectory.read_bytes()).hexdigest(),
+            'metrics_sha256': hashlib.sha256(metrics.read_bytes()).hexdigest()}
         try:
             finished = (nonempty(done) and nonempty(trajectory) and nonempty(metrics)
-                        and (args.dry_run or json.loads(done.read_text()) == identity))
+                        and (args.dry_run or json.loads(done.read_text()) == sealed_identity))
         except ValueError:
             finished = False
+        if args.summarize_only:
+            if not finished:
+                raise ValueError(f'{result}: missing or stale sealed evaluation; rerun evaluation/scoring explicitly')
+            continue
         if not finished:
             if not args.dry_run:
                 result.mkdir(parents=True, exist_ok=True)
@@ -208,7 +217,9 @@ def run_sequence(job, arm_dir, overrides, total, args, python, pack_python, flas
             if not args.dry_run:
                 if not (nonempty(trajectory) and nonempty(metrics)):
                     raise ValueError(f'{result}: evaluator returned without both outputs')
-                write_json(done, identity)
+                write_json(done, {**identity,
+                    'trajectory_sha256': hashlib.sha256(trajectory.read_bytes()).hexdigest(),
+                    'metrics_sha256': hashlib.sha256(metrics.read_bytes()).hexdigest()})
         else:
             print(f'# skip evaluation: {result}')
         # Re-score CPU outputs on every pass: this also validates cached trajectories.
@@ -247,7 +258,7 @@ def main():
         python = str(Path(os.environ.get('PYTHON', ROOT / '.venv-flash/bin/python')).absolute())
         pack_python = str(Path(os.environ.get('PACK_PYTHON', ROOT / '.venv/bin/python')).absolute())
         flash = Path(os.environ.get('FLASH_ROOT', FLASH)).resolve()
-        evaluator = None if args.dry_run or args.summarize_only else evaluator_identity(flash)
+        evaluator = None if args.dry_run else evaluator_identity(flash)
         candidates = []
         failures = []
         jobs = []

@@ -176,6 +176,9 @@ class SubmissionReviewTest(unittest.TestCase):
     def test_offline_validator_rejects_per_frame_checkpoint_mixing(self):
         sample=pd.read_csv(SAMPLE,dtype=str)
         frame=sample_frame(sample.row_id)
+        manifest=json.loads((KIT/'KIT_MANIFEST.json').read_text())['files']
+        frame['packer_script_sha256']=manifest['tools/pack_submission.py']
+        frame['uploader_script_sha256']=manifest['submit/v2d_submit.py']
         frame.loc[1,'checkpoint_sha256']='b'*64
         out=self.work/'mixed.csv';frame.to_csv(out,index=False)
         metric=load_module('mp',KIT/'metric_code/track_2/MP-SR.py')

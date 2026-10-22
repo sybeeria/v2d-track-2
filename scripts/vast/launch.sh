@@ -8,8 +8,27 @@ set -euo pipefail
 D=$(cd "${1:?run dir}" && pwd) id=${2:?instance id}
 P=$(cd "$(dirname "$0")/../.." && pwd)
 name=$(basename "$D")
+# A run directory has one live instance binding and one controller owner.
+if [ "${LAUNCH_LOCKED:-}" != "$D" ]; then
+    exec python3 - "$0" "$D" "$@" <<'PYLAUNCHLOCK'
+import fcntl, os, sys
+lock = open(os.path.join(sys.argv[2], '.watchdog.lock'), 'a')
+try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError: sys.exit('a launch or watchdog already owns this run directory')
+os.set_inheritable(lock.fileno(), True)
+os.environ['LAUNCH_LOCKED'] = sys.argv[2]
+os.execvp('bash', ['bash', sys.argv[1], *sys.argv[3:]])
+PYLAUNCHLOCK
+fi
+if [ -f "$D/host" ]; then
+    read -r previous_id _ < "$D/host"
+    if [ "$previous_id" != "$id" ] && [ ! -f "$D/STOPPED" ]; then
+        echo "previous instance $previous_id has no completed stop; use a distinct run directory" >&2; exit 2
+    fi
+fi
 read -r host port < <(vastai show instance "$id" --raw | python3 -I -c "import json,sys; o=json.load(sys.stdin); print(o['public_ipaddr'].strip(), o['ports']['22/tcp'][0]['HostPort'])")
 echo "$id $host $port" > "$D/host"
+rm -f "$D/STOPPED" "$D/BACKUP_FAILED"
 ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=30 -i "$HOME/.ssh/id_ed25519" -p "$port")
 ssh "${ssh_opts[@]}" root@"$host" "mkdir -p /workspace/v2d-track-2/data/denoise_eval" 2>&1 | grep -v "Welcome\|Have fun" || true
 rsync -az -e "ssh ${ssh_opts[*]}" --exclude '.venv*' --exclude external --exclude data --exclude runs \

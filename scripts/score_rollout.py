@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import importlib.util
 import io
 import json
@@ -141,6 +142,8 @@ def score_rollout(rollout: Path, reference: Path, mesh: Path | None = None):
     clean, vertices, mesh, body_name = load_reference(reference, mesh)
     achieved = load_rollout(rollout, len(clean), body_name)
     return {'rollout': str(rollout.resolve()), 'reference': str(reference.resolve()),
+            'rollout_sha256': hashlib.sha256(rollout.read_bytes()).hexdigest(),
+            'reference_sha256': hashlib.sha256(reference.read_bytes()).hexdigest(),
             'mesh': str(mesh), 'frames': len(clean), 'metrics': score(clean, achieved, vertices)}
 
 

@@ -64,17 +64,18 @@ fi
 echo "== Retargeting venv (.venv)"
 if [ ! -x .venv/bin/python ]; then
     uv venv -q --python 3.11 .venv
-    # pinocchio's native closure is pinned as in robotic_grounding/workflow/Dockerfile.
-    uv pip install -q --python .venv/bin/python torch scipy trimesh pyarrow pandas "viser==1.0.15" \
-        "py-soma-x==0.2.1" mujoco "judo-rai>=0.0.5" "pin==3.7.0" "pin-pink==4.2.0" "coal==3.0.1" \
-        "eigenpy==3.10.3" "cmeel==0.57.3" "cmeel-boost==1.87.0.1" "cmeel-urdfdom==4.0.1" \
-        "cmeel-console-bridge==1.0.2.3" "cmeel-tinyxml2==10.0.0" "cmeel-tinyxml==2.6.2.3" \
-        "cmeel-assimp==5.4.3.1" "cmeel-octomap==1.10.0" "cmeel-qhull==8.0.2.1" "cmeel-zlib==1.3.1" \
-        usd-core deprecation osqp "qpsolvers[clarabel,daqp,proxqp,scs,osqp]==4.9.0" loop-rate-limiters \
-        tqdm psutil toml setuptools huggingface_hub
-    uv pip install -q --python .venv/bin/python --no-build-isolation \
-        -e external/video_to_data/robotic_grounding/source/robotic_grounding
 fi
+# An interpreter can survive an interrupted install; dependency installation must be retried.
+# pinocchio's native closure is pinned as in robotic_grounding/workflow/Dockerfile.
+uv pip install -q --python .venv/bin/python torch scipy trimesh pyarrow pandas "viser==1.0.15" \
+    "py-soma-x==0.2.1" mujoco "judo-rai>=0.0.5" "pin==3.7.0" "pin-pink==4.2.0" "coal==3.0.1" \
+    "eigenpy==3.10.3" "cmeel==0.57.3" "cmeel-boost==1.87.0.1" "cmeel-urdfdom==4.0.1" \
+    "cmeel-console-bridge==1.0.2.3" "cmeel-tinyxml2==10.0.0" "cmeel-tinyxml==2.6.2.3" \
+    "cmeel-assimp==5.4.3.1" "cmeel-octomap==1.10.0" "cmeel-qhull==8.0.2.1" "cmeel-zlib==1.3.1" \
+    usd-core deprecation osqp "qpsolvers[clarabel,daqp,proxqp,scs,osqp]==4.9.0" loop-rate-limiters \
+    tqdm psutil toml setuptools huggingface_hub
+uv pip install -q --python .venv/bin/python --no-build-isolation \
+    -e external/video_to_data/robotic_grounding/source/robotic_grounding
 # Also install into an existing retarget-only venv.
 uv pip install -q --python .venv/bin/python -r external/kit/v2d_submission_kit/requirements.txt
 (cd external/video_to_data/robotic_grounding && "$PROJECT/.venv/bin/python" scripts/setup_soma_assets.py)
