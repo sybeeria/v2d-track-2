@@ -5,6 +5,7 @@ flag discontinuities for inspection; they are not reconstruction accuracy scores
 """
 from __future__ import annotations
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import pickle
@@ -86,15 +87,52 @@ def contact_gaps(vertices, poses, joints, row):
     return gaps
 
 
+
+def frame0_data(reference):
+    return dict(poses=reference.poses_rotvec, transl=reference.transl,
+                joint_names=np.asarray(reference.joint_names), identity_model_type=np.array('mhr'),
+                identity_coeffs=reference.identity_coeffs[None], scale_params=reference.scale_params[None],
+                bone_length_flexibles=reference.bone_length_flexibles, unit=np.array('meters'), keep_root=np.array(False))
+
+
+def arrays_sha256(data):
+    digest = hashlib.sha256()
+    for key, value in sorted(data.items()):
+        value = np.ascontiguousarray(value)
+        digest.update(json.dumps([key, value.dtype.str, value.shape]).encode())
+        digest.update(value.tobytes())
+    return digest.hexdigest()
+
+
+def load_joint_cache(path, sequence, raw, parquet, reference, expected):
+    record = json.loads(path.read_text())
+    if record['schema'] != 1:
+        raise ValueError('unsupported joint cache schema')
+    for key, source in [('sequence', sequence/'soma_params.npz'), ('raw', raw/'soma_params.npz'), ('parquet', parquet)]:
+        if hashlib.sha256(source.read_bytes()).hexdigest() != record['inputs'][key]['sha256']:
+            raise ValueError('joint cache input hash mismatch: '+key)
+    if arrays_sha256(frame0_data(reference)) != record['frame0_arrays_sha256']:
+        raise ValueError('joint cache frame-zero input mismatch')
+    archive = path.parent / record['archive']['path']
+    if hashlib.sha256(archive.read_bytes()).hexdigest() != record['archive']['sha256']:
+        raise ValueError('joint cache archive hash mismatch')
+    with np.load(archive, allow_pickle=False) as data:
+        joints, target, raw_joints = (data[k] for k in ('joints', 'target', 'raw_joints'))
+        frames = data['raw_frames'].tolist()
+    if (joints.shape != (expected,77,3) or target.shape != (77,3)
+            or raw_joints.shape != (3,77,3) or frames != [0,expected//2,expected-1]
+            or not all(np.isfinite(x).all() for x in (joints,target,raw_joints))):
+        raise ValueError('joint cache dimensions, frame correspondence or values invalid')
+    return joints, target, dict(zip(frames, raw_joints @ CV_TO_SOMA)), record
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     for name in ('sequence','raw','parquet','video','wild-export','tier1-root','out'):
         p.add_argument('--'+name, type=Path, required=True)
     p.add_argument('--episode', type=int, required=True)
+    p.add_argument('--joint-cache', type=Path, help='hash-bound native joints prepared separately; avoids full-mesh decoding')
     a = p.parse_args()
-    import torch
-    torch.set_num_threads(2)
-    from robotic_grounding.retarget.read_soma import SOMA
     from flash_chord.data.motion_v1 import load_motion_v1
     from flash_chord.assets.registry import support_usda_for_parquet
     from pxr import Usd
@@ -108,20 +146,22 @@ def main():
     poses=np.load(a.sequence/'poses.npy',allow_pickle=False)
     if expected != len(poses) or expected != len(source['poses']) or expected != motion.num_frames:
         raise ValueError('video/human/object/G1 frame coverage differs')
-    soma=SOMA(device=torch.device('cpu'))
-    decoded=soma.load_motion(a.sequence/'soma_params.npz')
-    joints=np.asarray(decoded['joints'])
     reference=load_tier1_frame0(a.tier1_root,a.episode)
-    # Decode only the one permitted reference frame through the existing helper.
-    from tier3_align import soma_frame0_joints
-    import tempfile
     a.out.mkdir(parents=True,exist_ok=True)
-    with tempfile.TemporaryDirectory(dir=a.out) as tmp:
-        ref=dict(poses=reference.poses_rotvec,transl=reference.transl,
-                 joint_names=np.asarray(reference.joint_names),identity_model_type=np.array('mhr'),
-                 identity_coeffs=reference.identity_coeffs[None],scale_params=reference.scale_params[None],
-                 bone_length_flexibles=reference.bone_length_flexibles,unit=np.array('meters'),keep_root=np.array(False))
-        target=soma_frame0_joints(ref,soma,Path(tmp)/'frame0.npz')
+    cache_record = None
+    if a.joint_cache:
+        joints, target, raw, cache_record = load_joint_cache(
+            a.joint_cache, a.sequence, a.raw, a.parquet, reference, expected)
+    else:
+        import torch
+        from robotic_grounding.retarget.read_soma import SOMA
+        from tier3_align import soma_frame0_joints
+        import tempfile
+        torch.set_num_threads(2)
+        soma=SOMA(device=torch.device('cpu'))
+        joints=np.asarray(soma.load_motion(a.sequence/'soma_params.npz')['joints'])
+        with tempfile.TemporaryDirectory(dir=a.out) as tmp:
+            target=soma_frame0_joints(frame0_data(reference),soma,Path(tmp)/'frame0.npz')
     ids=[list(source['joint_names']).index(n) for n in ALIGN_JOINTS]
     diff=joints[0,ids] @ CV_TO_SOMA - target[ids]
     ref_object,_=object_poses_matrix(reference.object_pose_wxyz,reference.object_visible)
@@ -162,9 +202,14 @@ def main():
                       'limitation':'frame zero is the alignment calibration, not held-out accuracy'},
             'support_stage':str(support),'scene_support_enabled':enabled,
             'ground_alignment':payload['ground_alignment'],'ik_error':summary(row['ik_error_per_frame'])}
+    if cache_record is not None:
+        report['joint_decode'] = {'method':'hash-bound retargeter native joint payload plus isolated frame-zero/raw decode',
+                                  'cache_sha256':hashlib.sha256(a.joint_cache.read_bytes()).hexdigest(),
+                                  'provenance':cache_record}
     (a.out/'quality.json').write_text(json.dumps(report,indent=2,allow_nan=False)+'\n')
     # Render the raw reconstruction in the input camera for three video frames.
-    raw=soma.load_motion(a.raw/'soma_params.npz')['joints'] @ CV_TO_SOMA
+    if not a.joint_cache:
+        raw=soma.load_motion(a.raw/'soma_params.npz')['joints'] @ CV_TO_SOMA
     raw_poses=np.load(a.raw/'poses.npy')
     raw_mesh=trimesh.load(a.raw/'reconstructed_mesh/output_aligned.glb',force='mesh',process=False)
     intrinsics=np.asarray(json.loads(a.wild_export.read_text())['intrinsics'])
