@@ -27,7 +27,9 @@ def main():
     p.add_argument('--existing-ep18', type=Path, default=ROOT / 'data/tier3_native/ep18')
     p.add_argument('--rgb-dir', type=Path, help='epNN.json independent video-only outlines, dimensions and video_sha256')
     p.add_argument('--episodes', type=int, nargs='+')
-    p.add_argument('--max-rss-bytes', type=int, default=1_850_000_000)
+    # Fresh ep18 (858 frames) SOMA export on the 16 GB M1: 4.96 GB sampled peak, ~19.5 frames/min.
+    p.add_argument('--max-rss-bytes', type=int, default=8_000_000_000)
+    p.add_argument('--stage-timeout-seconds', type=int, default=4 * 3600)
     p.add_argument('--released-scene-assets-engineering-only', action='store_true', required=True)
     a = p.parse_args()
     if digest(a.protocol) != PROTOCOL_SHA256:
@@ -91,7 +93,7 @@ def main():
                         raise ValueError('unowned partial bridge output: ' + stage)
                     atomic(started, identity)
                 log = root / (stage + '.log')
-                info = run(args, log, max_bytes=a.max_rss_bytes, env={'WARP_CACHE_PATH': str(root / 'warp_cache'), 'TMPDIR': str(root / 'tmp')})
+                info = run(args, log, max_bytes=a.max_rss_bytes, timeout=a.stage_timeout_seconds, env={'WARP_CACHE_PATH': str(root / 'warp_cache'), 'TMPDIR': str(root / 'tmp')})
                 result['stages'].append({'stage': stage, **info})
                 if outputs:
                     artifacts = fingerprint(outputs)
