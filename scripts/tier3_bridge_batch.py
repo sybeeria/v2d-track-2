@@ -65,9 +65,12 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         # Do not leave a previous success manifest visible while revalidating inputs.
         manifest = a.out / 'manifest.json'
-        if manifest.exists():
-            manifest.replace(a.out / 'manifest.previous.json')
-        results, accepted = [], []
+        # Decision D2 (data/brainstorm6/DECISIONS.md): every structurally valid reference, PASS or gate HOLD, is covered.
+        coverage = a.out / 'coverage_manifest.json'
+        for path in (manifest, coverage):
+            if path.exists():
+                path.replace(path.with_name(path.stem + '.previous.json'))
+        results, accepted, covered = [], [], []
         for row in rows:
             ep = row['episode']; sequence = row['sequence']; name = row['native_sequence']
             root = a.out / f'ep{ep:02d}'; root.mkdir(exist_ok=True)
@@ -257,11 +260,14 @@ def main():
                 execute('gates', gate_args)
                 gate = json.loads((root / 'gate.json').read_text())
                 result.update(status=gate['status'], reasons=gate['reasons'], inspected=gate.get('inspected', []))
-                if gate['status'] == 'PASS':
+                if gate['status'] in ('PASS', 'HOLD'):
                     ref = root / f'assets/human_motion_data/whole_body/soma/sequence_id={sequence}/robot_name=g1/data.parquet'
                     reference = {'path': str(ref), 'sha256': digest(ref)}
-                    accepted.append({'episode': ep, 'sequence': sequence, 'frames': row['frames'], 'arms': {result['input_arm']: {
-                        'training_reference': reference, 'clean_scoring_reference': reference, 'support': {**gate['support'], 'enabled': False}}}})
+                    entry = {'episode': ep, 'sequence': sequence, 'frames': row['frames'], 'arms': {result['input_arm']: {
+                        'training_reference': reference, 'clean_scoring_reference': reference, 'support': {**gate['support'], 'enabled': False}}}}
+                    covered.append({**entry, 'gate': {'status': gate['status'], 'reasons': gate['reasons']}})
+                    if gate['status'] == 'PASS':
+                        accepted.append(entry)
             except ResourceHold as error:
                 result.update(status='HOLD', reasons=['resource limit: ' + str(error)])
             except Exception as error:
@@ -274,7 +280,10 @@ def main():
             tmp = a.out / '.status.tsv.tmp'; tmp.write_text('\n'.join(lines) + '\n'); tmp.replace(a.out / 'status.tsv')
         if accepted:
             atomic(manifest, {'schema_version': 1, 'tier': 3, 'scoring_mode': 'self', 'sequences': accepted})
-        print(json.dumps({'episodes': len(results), 'passing': len(accepted), 'manifest': str(manifest) if accepted else None}))
+        if covered:
+            atomic(coverage, {'schema_version': 1, 'tier': 3, 'scoring_mode': 'self', 'sequences': covered})
+        print(json.dumps({'episodes': len(results), 'passing': len(accepted), 'covered': len(covered),
+                          'manifest': str(manifest) if accepted else None, 'coverage_manifest': str(coverage) if covered else None}))
         raise SystemExit(0 if len(accepted) == len(rows) and rows else 1)
 
 

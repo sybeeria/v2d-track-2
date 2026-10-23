@@ -197,18 +197,27 @@ elif mode=='retarget':
         original_manifest=(self.out/'manifest.json').read_bytes()
         again=self.invoke();self.assertEqual(again.returncode,0,again.stdout+again.stderr)
         self.assertEqual((self.out/'manifest.json').read_bytes(),original_manifest)
+        coverage=json.loads((self.out/'coverage_manifest.json').read_text())
+        self.assertEqual(coverage['sequences'],[{**manifest['sequences'][0],'gate':{'status':'PASS','reasons':[]}}])
         # User changes a video, retaining the same old plan and previous manifest.
         Path(json.loads(self.plan.read_text())['episodes'][0]['video']).write_bytes(b'changed video')
         second=self.invoke();self.assertEqual(second.returncode,1,second.stdout+second.stderr)
-        self.assertFalse((self.out/'manifest.json').exists())
+        self.assertFalse((self.out/'manifest.json').exists());self.assertFalse((self.out/'coverage_manifest.json').exists())
         self.assertIn('\tFAIL\tchanged bridge input: video',(self.out/'status.tsv').read_text().replace('ValueError: ',''))
 
-    def test_hold_emits_status_without_training_manifest(self):
+    def test_hold_is_covered_but_never_in_the_pass_manifest(self):
         alignment=self.fixture.source/'tier3_alignment.json';value=json.loads(alignment.read_text());value['scene_assets_mode']='released-engineering-only; ruling pending';alignment.write_text(json.dumps(value))
         result=self.invoke();self.assertEqual(result.returncode,1,result.stdout+result.stderr)
         self.assertFalse((self.out/'manifest.json').exists())
         statuses=json.loads((self.out/'status.json').read_text());self.assertEqual([r['status'] for r in statuses],['HOLD'])
         self.assertIn('released scene assets: organizer ruling pending',statuses[0]['reasons'])
+        coverage=json.loads((self.out/'coverage_manifest.json').read_text())
+        self.assertEqual([(s['episode'],s['gate']) for s in coverage['sequences']],[(18,{'status':'HOLD','reasons':statuses[0]['reasons']})])
+        arm=coverage['sequences'][0]['arms']['tier3_raw']
+        self.assertEqual(sha(Path(arm['training_reference']['path'])),arm['training_reference']['sha256'])
+        sys.path.insert(0,str(ROOT/'scripts'));from pilot_queue import read_inputs
+        jobs=read_inputs(self.out/'coverage_manifest.json',None,['tier3_raw'])
+        self.assertEqual(list(jobs),[f"tier3_raw/{coverage['sequences'][0]['sequence']}"])
 
     def test_changed_cached_G1_cannot_reuse_a_previous_pass_manifest(self):
         first=self.invoke();self.assertEqual(first.returncode,0,first.stdout+first.stderr)
