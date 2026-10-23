@@ -13,6 +13,7 @@ sys.path.insert(0, str(ROOT / 'scripts/tier3_native'))
 from batch import atomic, digest
 from stage import fingerprint, remove_owned
 from bounded import run, ResourceHold
+from tier3_rest_repair import preflight
 
 PROTOCOL_SHA256 = 'eec81f1beac187d63cca82ca6b098999be62dff56e7fe1be64c9f874d3af41da'
 
@@ -26,12 +27,22 @@ def main():
     p.add_argument('--ep18-cache', type=Path, help='explicit existing decoded/retargeted cache; never claims fresh decoding')
     p.add_argument('--existing-ep18', type=Path, default=ROOT / 'data/tier3_native/ep18')
     p.add_argument('--rgb-dir', type=Path, help='epNN.json independent video-only outlines, dimensions and video_sha256')
+    rest = p.add_mutually_exclusive_group()
+    rest.add_argument('--rest-evidence-dir', type=Path, help='video-only epNN/rgb_evidence.json; preflight HOLD keeps generic repair')
+    rest.add_argument('--rest-evidence', type=Path, help='single selected episode evidence, including the legacy schema')
+    p.add_argument('--legacy-rest-video-sha256', help='explicit video binding for legacy evidence without video metadata')
     p.add_argument('--episodes', type=int, nargs='+')
     # Fresh ep18 (858 frames) on the 16 GB M1: export 7 min at 5.5 GB peak RSS; retarget 2.3 min at 6.9 GB sampled.
     p.add_argument('--max-rss-bytes', type=int, default=8_000_000_000)
     p.add_argument('--stage-timeout-seconds', type=int, default=4 * 3600)
     p.add_argument('--released-scene-assets-engineering-only', action='store_true', required=True)
     a = p.parse_args()
+    if a.rest_evidence and (not a.episodes or len(a.episodes) != 1):
+        p.error('--rest-evidence requires exactly one --episodes selection')
+    if a.legacy_rest_video_sha256 and (not a.rest_evidence or not re.fullmatch(r'[a-f0-9]{64}', a.legacy_rest_video_sha256)):
+        p.error('--legacy-rest-video-sha256 requires --rest-evidence and a SHA256')
+    if a.ep18_cache and (a.rest_evidence or a.rest_evidence_dir):
+        p.error('video rest repair requires fresh decoding/retargeting; omit --ep18-cache')
     if digest(a.protocol) != PROTOCOL_SHA256:
         raise ValueError('frozen protocol changed; review gates before running')
     rows = json.loads(a.plan.read_text())['episodes']
@@ -61,9 +72,15 @@ def main():
             ep = row['episode']; sequence = row['sequence']; name = row['native_sequence']
             root = a.out / f'ep{ep:02d}'; root.mkdir(exist_ok=True)
             result = {'episode': ep, 'sequence': sequence, 'status': 'FAIL', 'reasons': [], 'stages': []}
+            evidence_path = a.rest_evidence or (a.rest_evidence_dir / f'ep{ep:02d}/rgb_evidence.json' if a.rest_evidence_dir else None)
+            rest_binding = {'path': str(evidence_path.resolve()) if evidence_path else None,
+                            'sha256': digest(evidence_path) if evidence_path and evidence_path.is_file() else None,
+                            'legacy_video_sha256': a.legacy_rest_video_sha256}
+            result['rest_repair'] = {'status': 'SKIPPED', 'reasons': ['video rest evidence not checked' if evidence_path else 'video rest evidence not configured'], **rest_binding}
             binding = {'plan_row': row, 'protocol_sha256': PROTOCOL_SHA256, 'driver_sha256': digest(Path(__file__)),
                        'code_sha256': {x.name: digest(x) for x in (ROOT / 'scripts').glob('tier3*.py')},
                        'weights': {str(x.relative_to(ROOT / 'data/tier3_weights')): digest(x) for x in (ROOT / 'data/tier3_weights/sam-3d-body-dinov3').rglob('*') if x.is_file()},
+                       'rest_evidence': rest_binding,
                        'rgb_sha256': digest(a.rgb_dir / f'ep{ep:02d}.json') if a.rgb_dir and (a.rgb_dir / f'ep{ep:02d}.json').exists() else None}
             if ep == 18 and a.ep18_cache:
                 cache = a.ep18_cache.resolve()
@@ -110,6 +127,15 @@ def main():
                     if digest(row[key]) != row[key + '_sha256']:
                         raise ValueError('changed bridge input: ' + key)
                 atomic(old, binding)
+                rest_allowed = False
+                if evidence_path:
+                    if not evidence_path.is_file():
+                        result['rest_repair']['reasons'] = ['video rest evidence missing']
+                    else:
+                        _, holds = preflight(json.loads(evidence_path.read_text()), episode=ep, frames=row['frames'],
+                            video_sha256=row['video_sha256'], legacy_video_sha256=a.legacy_rest_video_sha256)
+                        rest_allowed = not holds
+                        result['rest_repair'].update(status='READY' if rest_allowed else 'SKIPPED', reasons=holds)
                 native = a.native_root / name
                 if ep == 18 and not native.exists():
                     native = a.existing_ep18
@@ -202,7 +228,18 @@ def main():
                     execute('alignment', python('tier3_align.py', '--source', raw, '--tier1-root', a.tier1_root, '--episode', ep,
                         '--out', root / 'aligned', '--motion-root', root / 'alignment_motion', '--ground-plane', row['ground_plane'],
                         '--support-surface', row['support_surface'], '--released-scene-assets-engineering-only'), [root / 'aligned', root / 'alignment_motion'])
-                    execute('repair', python('tier3_repair.py', '--source', root / 'aligned' / sequence, '--out', root / 'sequences' / sequence), [root / 'sequences'])
+                    repaired = root / ('generic_repair' if rest_allowed else 'sequences')
+                    execute('repair', python('tier3_repair.py', '--source', root / 'aligned' / sequence, '--out', repaired / sequence), [repaired])
+                    if rest_allowed:
+                        rest_args = python('tier3_rest_repair.py', '--source', repaired / sequence,
+                            '--camera', camera, '--evidence', evidence_path, '--evidence-sha256', rest_binding['sha256'],
+                            '--episode', ep, '--frames', row['frames'], '--video-sha256', row['video_sha256'],
+                            '--python-deps', a.python_deps, '--out', root / 'sequences' / sequence)
+                        if a.legacy_rest_video_sha256:
+                            rest_args += ['--legacy-video-sha256', a.legacy_rest_video_sha256]
+                        execute('video_rest_repair', rest_args, [root / 'sequences'])
+                        result['rest_repair']['status'] = 'APPLIED'
+                        result['input_arm'] = 'tier3_rest_repaired'
                     motion = root / 'retarget/motion'
                     execute('retarget', python('tier3_native/bridge_retarget.py', '--project', ROOT, '--sequences', root / 'sequences',
                         '--alignment-motion', root / 'alignment_motion', '--out', root / 'retarget'), [root / 'retarget'])
@@ -231,7 +268,9 @@ def main():
                 result.update(status='FAIL', reasons=[type(error).__name__ + ': ' + str(error)])
             atomic(root / 'result.json', result); results.append(result)
             atomic(a.out / 'status.json', results)
-            lines = ['episode\tsequence\tstatus\treason'] + [f"{r['episode']:02d}\t{r['sequence']}\t{r['status']}\t" + '; '.join(r['reasons']).replace('\n', ' ').replace('\t', ' ') for r in results]
+            lines = ['episode\tsequence\tstatus\treason\trest_repair\trest_reason'] + [f"{r['episode']:02d}\t{r['sequence']}\t{r['status']}\t" +
+                '; '.join(r['reasons']).replace('\n', ' ').replace('\t', ' ') + '\t' + r['rest_repair']['status'] + '\t' +
+                '; '.join(r['rest_repair']['reasons']).replace('\n', ' ').replace('\t', ' ') for r in results]
             tmp = a.out / '.status.tsv.tmp'; tmp.write_text('\n'.join(lines) + '\n'); tmp.replace(a.out / 'status.tsv')
         if accepted:
             atomic(manifest, {'schema_version': 1, 'tier': 3, 'scoring_mode': 'self', 'sequences': accepted})
