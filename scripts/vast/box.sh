@@ -11,6 +11,12 @@ sampler=
 trap 'status=$?; if [ -n "$sampler" ]; then kill "$sampler" 2>/dev/null || true; fi; if [ "$status" -ne 0 ]; then date -u +"box failed %FT%TZ"; fi' EXIT
 cd /workspace/v2d-track-2
 date -u +"box start %FT%TZ"
+# A native-reconstruction entry owns setup; do not read training screen data.
+if [ -f "/workspace/$name.entry.sh" ]; then
+    export VAST_RUN_NAME="$name"
+    if bash "/workspace/$name.entry.sh"; then date -u +"box done %FT%TZ"; exit 0; fi
+    exit 1
+fi
 [ ! -f "/workspace/$name.env.sh" ] || source "/workspace/$name.env.sh"
 BOOTSTRAP_TIERS="${BOOTSTRAP_TIERS:- }" bash scripts/gpu_bootstrap.sh
 date -u +"bootstrap done %FT%TZ"

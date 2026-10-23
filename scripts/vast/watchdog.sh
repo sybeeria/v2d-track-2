@@ -6,6 +6,7 @@
 # reaches CAP_DOLLARS, or when the account's Vast credit falls below CREDIT_FLOOR (default 1). Each cycle also arms
 # scripts/vast/deadman.sh on the box, which stops the instance itself if this watchdog stops working.
 set -uo pipefail
+unset HF_TOKEN HUGGING_FACE_HUB_TOKEN HUGGINGFACEHUB_API_TOKEN
 D=$(cd "${1:?run dir}" && pwd) cap=${2:?cap dollars} floor=${3:-1}
 name=$(basename "$D")
 read -r id host port < "$D/host"
@@ -29,8 +30,12 @@ with subprocess.Popen(sys.argv[1:], start_new_session=True, close_fds=False) as 
     try:
         sys.exit(process.wait(timeout=timeout))
     except subprocess.TimeoutExpired:
-        os.killpg(process.pid, signal.SIGKILL)
-        process.wait()
+        os.killpg(process.pid, signal.SIGTERM)
+        try:
+            process.wait(timeout=5)  # let rsync preserve its partial file
+        except subprocess.TimeoutExpired:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
         print(f'watchdog command timed out after {timeout}s: {sys.argv[1]}', file=sys.stderr)
         sys.exit(124)
 PYBOUND
@@ -46,7 +51,7 @@ mkdir -p "$D/pulled"
 log() { echo "$(date -u +%FT%TZ) $*" >> "$D/watchdog.log"; }
 
 pull() {
-    bounded rsync -az --timeout=90 -e "ssh ${ssh_opts[*]}" --exclude '.*.tmp' --exclude 'state_*.safetensors' --exclude 'replay_*.safetensors' --exclude '*.ckpt' --exclude '*.pt' \
+    bounded rsync -az --partial-dir=.rsync-partial --timeout=90 -e "ssh ${ssh_opts[*]}" --exclude build --exclude '.staging' --exclude '.rsync-partial' --exclude '.batch.lock' --exclude '*.lock' --exclude '.*.tmp' --exclude 'state_*.safetensors' --exclude 'replay_*.safetensors' --exclude '*.ckpt' --exclude '*.pt' \
         root@"$host":/workspace/v2d-track-2/runs/"$name" "$D/pulled/" 2>> "$D/watchdog.log" || return 1
     # Actors are small; compact learner state dominates disk. Keep two immutable state generations per policy.
     if ! bounded ssh -n "${ssh_opts[@]}" root@"$host" "python3 - /workspace/v2d-track-2/runs/$name <<'PYSTATES'
@@ -74,7 +79,18 @@ for parent in {p.parent for p in keep}:
         if re.fullmatch(r'state_[0-9]+\.safetensors', path.name) and path.relative_to(root) not in keep:
             path.unlink()
 PYPRUNE
-    bounded rsync -az --timeout=90 -e "ssh ${ssh_opts[*]}" root@"$host":'/workspace/*.log' "$D/pulled/" 2>> "$D/watchdog.log"
+    bounded rsync -az --timeout=90 -e "ssh ${ssh_opts[*]}" root@"$host":'/workspace/*.log' "$D/pulled/" 2>> "$D/watchdog.log" || return 1
+    # Publish only after the entire checked pull, so a controller cannot release a
+    # canary from a partially transferred tree.
+    python3 -I - "$D" "$name" <<'PYPULLRECEIPT'
+import json, sys, time
+from pathlib import Path
+directory, name = Path(sys.argv[1]), sys.argv[2]
+canary = directory / 'pulled' / name / 'episodes/CANARY_READY.json'
+record = {'completed_at_ns': time.time_ns(), 'canary': json.loads(canary.read_text()) if canary.exists() else None}
+temp = directory / '.pull.success.tmp'
+temp.write_text(json.dumps(record) + '\n'); temp.replace(directory / 'pull.success.json')
+PYPULLRECEIPT
 }
 
 # destroy REASON [hard]. Soft reasons keep the instance when it cannot be stopped or backed up and retry next
@@ -92,6 +108,8 @@ destroy() {
             kill -KILL -- -\$pid 2>/dev/null || true" >> "$D/watchdog.log" 2>&1; then
         log "cannot stop writer ($1)"
         [ -n "$hard" ] || return 1
+    else
+        date -u +%FT%TZ > "$D/QUIESCED"
     fi
     if ! pull && ! pull; then
         log "backup failed ($1)"
@@ -124,7 +142,9 @@ while true; do
             grep -E '^training progress' \"\$f\" | tail -1 | cut -c1-120; done
         tail -1 /workspace/gpu_samples.log 2>/dev/null" > "$D/status.txt" 2>/dev/null
     log "state=${state:-unreachable} spend=\$$spend credit=\$${credit:-?} $(tr '\n' '|' < "$D/status.txt" | cut -c1-400)"
-    grace=5400; [ ! -e "$D/KEEP" ] || grace=0
+    # The idle stop waits out the longest watchdog cycle (three bounded pulls plus sleep), or 90 min.
+    grace=$(( 4 * ${WATCHDOG_COMMAND_TIMEOUT_SECONDS:-120} + 1200 )); [ "$grace" -ge 5400 ] || grace=5400
+    [ ! -e "$D/KEEP" ] || grace=0
     bounded ssh -n "${ssh_opts[@]}" root@"$host" "echo $deadline $grace > /workspace/$name.deadline.tmp && mv /workspace/$name.deadline.tmp /workspace/$name.deadline &&
         { setsid nohup bash /workspace/v2d-track-2/scripts/vast/deadman.sh $name >> /workspace/$name.deadman.log 2>&1 < /dev/null & }" \
         >> "$D/watchdog.log" 2>&1 || log "cannot arm box deadman"
@@ -174,7 +194,7 @@ print("stalled" if stalled else "active")' "$D/job-progress-$id.json" "$(date +%
         progress=$(bounded ssh -n "${ssh_opts[@]}" root@"$host" "
             grep -E '^(box|bootstrap|screen|GPU [0-9]+:) ' /workspace/$name.log
             find /workspace/v2d-track-2/runs/$name -name train.log -exec sh -c 'grep -a \"^training progress\" \"\$1\" | tail -1' sh {} \;
-            find /workspace/v2d-track-2/runs/$name -type f \( -name 'policy_*.safetensors' -o -name scores.json -o -name metrics.json \) -printf '%p %T@ %s\n'
+            find /workspace/v2d-track-2/runs/$name -type f \( -name 'policy_*.safetensors' -o -name scores.json -o -name metrics.json -o -name '*.done.json' -o -name result.json \) -printf '%p %T@ %s\n'
             true" 2>/dev/null) || progress=
         if [ -n "$progress" ] && [ "$progress" = "$progress_before" ]; then
             if [ ! -e "$D/KEEP" ] && [ $(( $(date +%s) - progress_since )) -ge 3600 ]; then

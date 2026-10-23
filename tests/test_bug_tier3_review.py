@@ -126,9 +126,9 @@ class IntegrityTests(unittest.TestCase):
 class NativeCacheTests(unittest.TestCase):
     def test_changed_command_source_is_not_silently_reused(self):
         with tempfile.TemporaryDirectory() as tmp:
-            work=Path(tmp);source=work/'worker.py';source.write_text('from pathlib import Path\nPath(__file__).with_name("artifact").write_text("A")\n')
+            work=Path(tmp);source=work/'worker.py';source.write_text('from pathlib import Path\nimport sys\nPath(sys.argv[1]).write_text("A")\n')
             command=[PYTHON,'-B',str(ROOT/'scripts/tier3_native/stage.py'),'--root',str(work),'--name','fixture',
-                     '--output',str(work/'artifact'),'--',PYTHON,'-B',str(source)]
+                     '--output',str(work/'artifact'),'--',PYTHON,'-B',str(source),str(work/'artifact')]
             first=subprocess.run(command,capture_output=True,text=True);self.assertEqual(first.returncode,0,first.stderr)
             self.assertEqual((work/'artifact').read_text(),'A')
             stat=source.stat();source.write_text(source.read_text().replace('"A"','"B"'));os.utime(source,ns=(stat.st_atime_ns,stat.st_mtime_ns))
@@ -141,7 +141,7 @@ class NativeCacheTests(unittest.TestCase):
             work=Path(tmp);source=work/'input';source.write_bytes(b'RGB-A')
             command=[PYTHON,'-B',str(ROOT/'scripts/tier3_native/stage.py'),'--root',str(work),'--name','fixture',
                      '--input',str(source),'--output',str(work/'artifact'),'--',PYTHON,'-B','-c',
-                     'from pathlib import Path; p=Path('+repr(str(work))+'); (p/"artifact").write_bytes((p/"input").read_bytes())']
+                     'from pathlib import Path; import sys; Path(sys.argv[2]).write_bytes(Path(sys.argv[1]).read_bytes())',str(source),str(work/'artifact')]
             first=subprocess.run(command,capture_output=True,text=True);self.assertEqual(first.returncode,0,first.stderr)
             stat=source.stat();source.write_bytes(b'RGB-B');os.utime(source,ns=(stat.st_atime_ns,stat.st_mtime_ns))
             second=subprocess.run(command,capture_output=True,text=True)

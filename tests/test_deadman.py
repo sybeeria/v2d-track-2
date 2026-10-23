@@ -88,7 +88,19 @@ class DeadmanTests(unittest.TestCase):
         output, _ = deadman.communicate(timeout=10)
         self.assertEqual(deadman.returncode, 0)
         self.assertEqual(self.server.requests, [self.stop_request()])
-        self.assertIn('stop requested (box script not running for 1s)', output)
+        self.assertIn('stop requested (box script not running and watchdog silent for 1s)', output)
+
+    def test_live_watchdog_keeps_finished_box_until_it_goes_silent(self):
+        self.arm(time.time() + 3600, 2)
+        deadman = self.start()
+        for _ in range(8):
+            self.arm(time.time() + 3600, 2)
+            time.sleep(0.5)
+        self.assertIsNone(deadman.poll())
+        self.assertEqual(self.server.requests, [])
+        output, _ = deadman.communicate(timeout=10)
+        self.assertEqual(self.server.requests, [self.stop_request()])
+        self.assertIn('watchdog silent for 2s', output)
 
     def test_zero_grace_keeps_idle_box_until_deadline(self):
         self.arm(time.time() + 3, 0)

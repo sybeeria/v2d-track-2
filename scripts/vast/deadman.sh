@@ -2,9 +2,10 @@
 # Usage (on the GPU box, armed by scripts/vast/watchdog.sh): deadman.sh NAME
 # Box-side backstop for the Mac watchdog, which stops enforcing anything when the Mac sleeps or its Vast session
 # expires. /workspace/NAME.deadline holds "DEADLINE_EPOCH GRACE_SECONDS", rewritten by every watchdog cycle. Every
-# minute: once the deadline has passed, or once /workspace/NAME.sh has not been running for GRACE_SECONDS (0 = never),
-# it asks Vast to stop this instance with the per-instance CONTAINER_API_KEY. Stop, not destroy: unpulled policies
-# stay on disk.
+# minute: once the deadline has passed, or once /workspace/NAME.sh is not running and no watchdog cycle has rewritten
+# the deadline for GRACE_SECONDS (0 = never), it asks Vast to stop this instance with the per-instance
+# CONTAINER_API_KEY. A live watchdog may still be pulling a finished box, so idleness alone never stops it.
+# Stop, not destroy: unpulled policies stay on disk.
 set -uo pipefail
 name=${1:?name}
 ws=${DEADMAN_WORKSPACE:-/workspace} interval=${DEADMAN_INTERVAL:-60} api=${VAST_API_URL:-https://console.vast.ai/api/v0}
@@ -28,17 +29,16 @@ sys.exit(0 if body.get('success', True) else 1)
 PYSTOP
 }
 log "armed for instance $id"
-idle_since=
 while true; do
     now=$(date +%s) reason=
     deadline= grace=
     read -r deadline grace < "$ws/$name.deadline" 2>/dev/null
     case "$deadline" in ''|*[!0-9]*) deadline=;; esac
     case "$grace" in ''|*[!0-9]*) grace=0;; esac
-    if pgrep -f "$ws/$name[.]sh" > /dev/null; then idle_since=; else idle_since=${idle_since:-$now}; fi
+    armed=$(date -r "$ws/$name.deadline" +%s 2>/dev/null || echo "$now")
     if [ -n "$deadline" ] && [ "$now" -ge "$deadline" ]; then reason="deadline $deadline passed"
-    elif [ "$grace" -gt 0 ] && [ -n "$idle_since" ] && [ $((now - idle_since)) -ge "$grace" ]; then
-        reason="box script not running for ${grace}s"
+    elif [ "$grace" -gt 0 ] && [ $((now - armed)) -ge "$grace" ] && ! pgrep -f "$ws/$name[.]sh" > /dev/null; then
+        reason="box script not running and watchdog silent for ${grace}s"
     fi
     if [ -n "$reason" ]; then
         if stop; then log "stop requested ($reason)"; exit 0; fi

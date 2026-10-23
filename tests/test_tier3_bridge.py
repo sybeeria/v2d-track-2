@@ -80,12 +80,12 @@ class InitializerTests(unittest.TestCase):
 class NativeStageTests(unittest.TestCase):
     def command(self,root,code):
         return [sys.executable,'-I',str(ROOT/'scripts/tier3_native/stage.py'),'--root',str(root),'--name','fixture',
-                '--input',str(root/'input'),'--output',str(root/'artifact'),'--',sys.executable,'-I','-c',code]
+                '--input',str(root/'input'),'--output',str(root/'artifact'),'--',sys.executable,'-I','-c',code,str(root/'artifact')]
 
     def test_real_stage_skips_success_and_rejects_changed_input(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);(root/'input').write_text('original')
-            code=f"from pathlib import Path; p=Path({str(root)!r}); (p/'artifact').write_text('exact output'); (p/'counter').write_text((p/'counter').read_text()+'x' if (p/'counter').exists() else 'x')"
+            code=f"from pathlib import Path; import sys; p=Path({str(root)!r}); Path(sys.argv[1]).write_text('exact output'); (p/'counter').write_text((p/'counter').read_text()+'x' if (p/'counter').exists() else 'x')"
             cmd=self.command(root,code)
             for _ in range(2):
                 r=subprocess.run(cmd,capture_output=True,text=True);self.assertEqual(r.returncode,0,r.stderr)
@@ -97,10 +97,10 @@ class NativeStageTests(unittest.TestCase):
     def test_interrupted_stage_resumes_and_retains_failed_log(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);(root/'input').write_text('input')
-            code=f"from pathlib import Path; import sys; p=Path({str(root)!r}); first=not (p/'attempt').exists(); (p/'attempt').write_text('yes'); (p/'artifact').write_text('partial' if first else 'complete'); sys.exit(7 if first else 0)"
+            code=f"from pathlib import Path; import sys; p=Path({str(root)!r}); first=not (p/'attempt').exists(); (p/'attempt').write_text('yes'); Path(sys.argv[1]).write_text('partial' if first else 'complete'); sys.exit(7 if first else 0)"
             cmd=self.command(root,code)
             self.assertEqual(subprocess.run(cmd,capture_output=True).returncode,7)
-            self.assertEqual((root/'artifact').read_text(),'partial')
+            self.assertFalse((root/'artifact').exists())
             self.assertEqual(subprocess.run(cmd,capture_output=True).returncode,0)
             self.assertEqual((root/'artifact').read_text(),'complete')
             self.assertEqual(len(list((root/'logs').glob('*.log'))),2)

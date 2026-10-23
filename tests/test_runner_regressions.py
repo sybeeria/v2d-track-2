@@ -265,6 +265,11 @@ class WatchdogTests(Sandbox):
             self.assertAlmostEqual(deadline - before, 5 * 3600 + 1800 - 600, delta=30)
             self.assertEqual(grace, 5400)
 
+    def test_long_pull_timeout_lengthens_the_deadman_idle_grace(self):
+        result = self.watchdog(cap='6', AGE='600', WATCHDOG_COMMAND_TIMEOUT_SECONDS='1800')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual({grace for _, grace in self.arming()}, {4 * 1800 + 1200})
+
     def test_keep_disables_only_the_deadman_idle_stop(self):
         (self.run / 'KEEP').touch()
         result = self.watchdog(cap='6', AGE='600')

@@ -32,6 +32,7 @@ entry=$HERE/python_entry.py
 step() {
   local name=$1; shift
   local -a cmd=("$NATIVE_PYTHON" -I "$HERE/stage.py" --root "$root" --name "$name" --input "$HERE/run.sh" --input "$HERE/env.sh" --input "$HERE/stage.py")
+  [[ ! -f $root/inputs.json ]] || cmd+=(--input "$root/inputs.json")
   while [[ $1 != -- ]]; do cmd+=("$1" "$2"); shift 2; done
   shift
   cmd+=(-- "$@")
