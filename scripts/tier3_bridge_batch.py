@@ -27,7 +27,7 @@ def main():
     p.add_argument('--existing-ep18', type=Path, default=ROOT / 'data/tier3_native/ep18')
     p.add_argument('--rgb-dir', type=Path, help='epNN.json independent video-only outlines, dimensions and video_sha256')
     p.add_argument('--episodes', type=int, nargs='+')
-    # Fresh ep18 (858 frames) SOMA export on the 16 GB M1: 4.96 GB sampled peak, ~19.5 frames/min.
+    # Fresh ep18 (858 frames) on the 16 GB M1: export 7 min at 5.5 GB peak RSS; retarget 2.3 min at 6.9 GB sampled.
     p.add_argument('--max-rss-bytes', type=int, default=8_000_000_000)
     p.add_argument('--stage-timeout-seconds', type=int, default=4 * 3600)
     p.add_argument('--released-scene-assets-engineering-only', action='store_true', required=True)
@@ -192,11 +192,13 @@ def main():
                     result['input_arm'] = 'tier3_repaired'
                     result['mode'] = 'fresh export/alignment/retarget'
                     raw = root / 'raw' / name
+                    # PoseInversion couples the frames of a batch. Batch 8 (the exporter default) reproduces the qualified
+                    # ep18 decode exactly and runs ~5.6x faster on CPU than batch 1, whose poses differ by up to .1 rad.
                     execute('export', python('tier3_export.py', '--bundle', bundle, '--mesh', mesh, '--weights', ROOT / 'data/tier3_weights',
                         '--checkpoint', ROOT / 'data/tier3_weights/sam-3d-body-dinov3/model.ckpt',
                         '--mhr-model', ROOT / 'data/tier3_weights/sam-3d-body-dinov3/assets/mhr_model.pt',
                         '--soma-assets', ROOT / 'external/video_to_data/robotic_grounding/source/robotic_grounding/robotic_grounding/assets/body_models/soma',
-                        '--out', raw, '--device', 'cpu', '--batch-size', 1, '--python-deps', a.python_deps), [raw])
+                        '--out', raw, '--device', 'cpu', '--batch-size', 8, '--python-deps', a.python_deps), [raw])
                     execute('alignment', python('tier3_align.py', '--source', raw, '--tier1-root', a.tier1_root, '--episode', ep,
                         '--out', root / 'aligned', '--motion-root', root / 'alignment_motion', '--ground-plane', row['ground_plane'],
                         '--support-surface', row['support_surface'], '--released-scene-assets-engineering-only'), [root / 'aligned', root / 'alignment_motion'])
