@@ -222,7 +222,7 @@ class WatchdogTests(Sandbox):
             text = p.read_text()
             for a, b in [('vastai', 'fake_provider'), ('ssh', 'fake_remote'), ('rsync', 'fake_sync'),
                          ('sleep', 'fake_pause'), ('date', 'fake_date')]:
-                text = re.sub(r'\b' + a + r'\b', b, text)
+                text = re.sub(r'(?<!\.)\b' + a + r'\b', b, text)  # not Python attributes such as time.sleep
             p.write_text(text)
         self.run = self.work / 'batch'; self.run.mkdir()
         (self.run / 'host').write_text('123 offline.invalid 9\n')
@@ -268,7 +268,7 @@ class WatchdogTests(Sandbox):
     def test_long_pull_timeout_lengthens_the_deadman_idle_grace(self):
         result = self.watchdog(cap='6', AGE='600', WATCHDOG_COMMAND_TIMEOUT_SECONDS='1800')
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual({grace for _, grace in self.arming()}, {4 * 1800 + 1200})
+        self.assertEqual({grace for _, grace in self.arming()}, {10 * 1800 + 1200})
 
     def test_keep_disables_only_the_deadman_idle_stop(self):
         (self.run / 'KEEP').touch()

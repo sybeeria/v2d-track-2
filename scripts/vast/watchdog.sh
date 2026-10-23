@@ -3,7 +3,7 @@
 # Every 10 min: logs status to RUN_DIR/watchdog.log and pulls runs/<run> (including policy and learner checkpoints) and /workspace/*.log into
 # RUN_DIR/pulled. Destroys the instance in RUN_DIR/host after a final pull when the box script has logged "box done",
 # when it has been gone for 60 min without that (unless RUN_DIR/KEEP exists), when this instance's estimated spend
-# reaches CAP_DOLLARS, or when the account's Vast credit falls below CREDIT_FLOOR (default 1). Each cycle also arms
+# reaches CAP_DOLLARS, or when the account's Vast credit falls below CREDIT_FLOOR (default 1). Each pull also arms
 # scripts/vast/deadman.sh on the box, which stops the instance itself if this watchdog stops working.
 set -uo pipefail
 unset HF_TOKEN HUGGING_FACE_HUB_TOKEN HUGGINGFACEHUB_API_TOKEN
@@ -24,18 +24,24 @@ fi
 # Bound wall time as well as socket inactivity: a live remote process can hang forever.
 bounded() {
     python3 -I - "$@" <<'PYBOUND'
-import os, signal, subprocess, sys
+import os, signal, subprocess, sys, time
 timeout = float(os.environ.get('WATCHDOG_COMMAND_TIMEOUT_SECONDS', '120'))
 with subprocess.Popen(sys.argv[1:], start_new_session=True, close_fds=False) as process:
     try:
         sys.exit(process.wait(timeout=timeout))
     except subprocess.TimeoutExpired:
         os.killpg(process.pid, signal.SIGTERM)
-        try:
-            process.wait(timeout=5)  # let rsync preserve its partial file
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-            process.wait()
+        # Let rsync preserve its partial file, then KILL whatever of the group survives, even after the leader
+        # exits: an orphaned receiver could otherwise keep writing into the backup after a later pull succeeds.
+        end = time.monotonic() + 5
+        while time.monotonic() < end:
+            process.poll()
+            try: os.killpg(process.pid, 0)
+            except ProcessLookupError: break
+            time.sleep(.1)
+        try: os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError): pass
+        process.wait()
         print(f'watchdog command timed out after {timeout}s: {sys.argv[1]}', file=sys.stderr)
         sys.exit(124)
 PYBOUND
@@ -50,7 +56,19 @@ deadline=$(python3 -I -c "import sys; s,c,r=map(float,sys.argv[1:]); print(int(s
 mkdir -p "$D/pulled"
 log() { echo "$(date -u +%FT%TZ) $*" >> "$D/watchdog.log"; }
 
+# Re-armed at the start of every pull, including the final ones, so the deadman sees a live watchdog throughout a
+# long backup. Its idle stop must outlast the longest gap between two arms: four pull commands, two progress checks,
+# the 600 s sleep, three status commands and the next arm, each bounded by T.
+arm_deadman() {
+    local grace=$(( 10 * ${WATCHDOG_COMMAND_TIMEOUT_SECONDS:-120} + 1200 )); [ "$grace" -ge 5400 ] || grace=5400
+    [ ! -e "$D/KEEP" ] || grace=0
+    bounded ssh -n "${ssh_opts[@]}" root@"$host" "echo $deadline $grace > /workspace/$name.deadline.tmp && mv /workspace/$name.deadline.tmp /workspace/$name.deadline &&
+        { setsid nohup bash /workspace/v2d-track-2/scripts/vast/deadman.sh $name >> /workspace/$name.deadman.log 2>&1 < /dev/null & }" \
+        >> "$D/watchdog.log" 2>&1 || log "cannot arm box deadman"
+}
+
 pull() {
+    arm_deadman
     bounded rsync -az --partial-dir=.rsync-partial --timeout=90 -e "ssh ${ssh_opts[*]}" --exclude build --exclude '.staging' --exclude '.rsync-partial' --exclude '.batch.lock' --exclude '*.lock' --exclude '.*.tmp' --exclude 'state_*.safetensors' --exclude 'replay_*.safetensors' --exclude '*.ckpt' --exclude '*.pt' \
         root@"$host":/workspace/v2d-track-2/runs/"$name" "$D/pulled/" 2>> "$D/watchdog.log" || return 1
     # Actors are small; compact learner state dominates disk. Keep two immutable state generations per policy.
@@ -142,12 +160,6 @@ while true; do
             grep -E '^training progress' \"\$f\" | tail -1 | cut -c1-120; done
         tail -1 /workspace/gpu_samples.log 2>/dev/null" > "$D/status.txt" 2>/dev/null
     log "state=${state:-unreachable} spend=\$$spend credit=\$${credit:-?} $(tr '\n' '|' < "$D/status.txt" | cut -c1-400)"
-    # The idle stop waits out the longest watchdog cycle (three bounded pulls plus sleep), or 90 min.
-    grace=$(( 4 * ${WATCHDOG_COMMAND_TIMEOUT_SECONDS:-120} + 1200 )); [ "$grace" -ge 5400 ] || grace=5400
-    [ ! -e "$D/KEEP" ] || grace=0
-    bounded ssh -n "${ssh_opts[@]}" root@"$host" "echo $deadline $grace > /workspace/$name.deadline.tmp && mv /workspace/$name.deadline.tmp /workspace/$name.deadline &&
-        { setsid nohup bash /workspace/v2d-track-2/scripts/vast/deadman.sh $name >> /workspace/$name.deadman.log 2>&1 < /dev/null & }" \
-        >> "$D/watchdog.log" 2>&1 || log "cannot arm box deadman"
     pull
     if [ "$state" = running ]; then
         active=$(bounded ssh -n "${ssh_opts[@]}" root@"$host" "python3 - /workspace/v2d-track-2/runs/$name <<'PYJOBS'

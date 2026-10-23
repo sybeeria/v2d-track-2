@@ -27,12 +27,13 @@ if [ -f "$D/host" ]; then
         echo "previous instance $previous_id has no completed stop; use a distinct run directory" >&2; exit 2
     fi
 fi
-if [ -f "$D/payload/runs/$name/input-assets/binding.json" ]; then
+# A staged pilot without its binding must fail verification, not skip it.
+if [ -d "$D/payload/runs/$name/input-assets" ]; then
     python3 -B "$P/data/brainstorm6/PROD-READY/verify_payload.py" --pilot "$D"
 fi
 read -r host port < <(vastai show instance "$id" --raw | python3 -I -c "import json,sys; o=json.load(sys.stdin); print(o['public_ipaddr'].strip(), o['ports']['22/tcp'][0]['HostPort'])")
 echo "$id $host $port" > "$D/host"
-rm -f "$D/STOPPED" "$D/BACKUP_FAILED"
+rm -f "$D/STOPPED" "$D/BACKUP_FAILED" "$D/QUIESCED"
 ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=30 -i "$HOME/.ssh/id_ed25519" -p "$port")
 ssh "${ssh_opts[@]}" root@"$host" "mkdir -p /workspace/v2d-track-2/data/denoise_eval" 2>&1 | grep -v "Welcome\|Have fun" || true
 if [ -f "$D/entry.sh" ]; then

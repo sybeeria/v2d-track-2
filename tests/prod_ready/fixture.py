@@ -27,7 +27,7 @@ class Fixture:
         import re
         for name in ['launch.sh','watchdog.sh']:
             p=self.controller/'scripts/vast'/name;s=p.read_text()
-            for a,b in [('vastai','fake_provider'),('ssh','fake_remote'),('rsync','fake_sync'),('sleep','fake_pause')]:s=re.sub(r'\b'+a+r'\b',b,s)
+            for a,b in [('vastai','fake_provider'),('ssh','fake_remote'),('rsync','fake_sync'),('sleep','fake_pause')]:s=re.sub(r'(?<!\.)\b'+a+r'\b',b,s)
             p.write_text(s)
         (self.controller/'data/denoise_eval').mkdir(parents=True);put(self.controller/'data/denoise_eval/fixture_config.json','{}')
         self.env={**os.environ,'PATH':str(bindir)+os.pathsep+os.environ['PATH'],'TRANSPORT_HOME':str(self.home),
