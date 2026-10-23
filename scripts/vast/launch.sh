@@ -27,6 +27,9 @@ if [ -f "$D/host" ]; then
         echo "previous instance $previous_id has no completed stop; use a distinct run directory" >&2; exit 2
     fi
 fi
+if [ -f "$D/payload/runs/$name/input-assets/binding.json" ]; then
+    python3 -B "$P/data/brainstorm6/PROD-READY/verify_payload.py" --pilot "$D"
+fi
 read -r host port < <(vastai show instance "$id" --raw | python3 -I -c "import json,sys; o=json.load(sys.stdin); print(o['public_ipaddr'].strip(), o['ports']['22/tcp'][0]['HostPort'])")
 echo "$id $host $port" > "$D/host"
 rm -f "$D/STOPPED" "$D/BACKUP_FAILED"

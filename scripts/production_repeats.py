@@ -4,7 +4,7 @@
 prepare -> run -> qualify. A failed/missing member blocks qualification; retrying a failed
 cohort requires a new declared experiment, never an automatic score-based reroll.
 """
-import argparse, hashlib, json, math, os, subprocess, sys
+import argparse, hashlib, json, math, os, shutil, subprocess, sys
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -21,6 +21,10 @@ def invoke(cmd,env=None):subprocess.run(cmd,cwd=ROOT,env={**os.environ,**(env or
 
 def stage(args):
     if args.k<1:raise ValueError('k must be positive')
+    if args.ep18:
+        from ep18_pilot import validate_jobs
+        validate_jobs(args.jobs)
+        if args.tier!=3 or args.k!=3:raise ValueError('ep18 requires Tier 3 and exactly k=3')
     if args.out.exists():raise ValueError('cohort root must be fresh; retained attempts cannot be overwritten')
     candidates=[]
     for line in args.jobs.read_text().splitlines():
@@ -48,20 +52,32 @@ def stage(args):
         candidates.append(dict(name=name,source=f'{name}/{arm}',group='cohort',arm=arm,
             arms_file=arms_file,input=label,sequence=seq,steps=expected,final_step=total))
     if not candidates:raise ValueError('empty jobs')
-    if len({c['sequence'] for c in candidates})!=len(candidates):raise ValueError('one checkpoint choice per episode/root required')
-    metadata=list(map(json.loads,(args.tier_root/'meta/episodes_metadata.jsonl').read_text().splitlines()))
-    lookup={r['sequence_id']:r['episode_index'] for r in metadata}
-    if len(lookup)!=len(metadata):raise ValueError('duplicate episode metadata')
-    for c in candidates:c['episode']=lookup[c['sequence']]
-    if args.ep18 and (args.tier!=3 or any(c['episode']!=18 for c in candidates)):
-        raise ValueError('--ep18 is limited to the registered Tier 3 episode 18 pilot')
+    if not args.ep18 and len({c['sequence'] for c in candidates})!=len(candidates):raise ValueError('one checkpoint choice per episode/root required')
+    if args.ep18:
+        for c in candidates:c['episode']=18
+    else:
+        metadata=list(map(json.loads,(args.tier_root/'meta/episodes_metadata.jsonl').read_text().splitlines()))
+        lookup={r['sequence_id']:r['episode_index'] for r in metadata}
+        if len(lookup)!=len(metadata):raise ValueError('duplicate episode metadata')
+        for c in candidates:c['episode']=lookup[c['sequence']]
     plan={'repeats':args.k,'tier':args.tier,'candidates':candidates,'manifest':str(args.manifest.resolve()),
           'manifest_sha256':digest(args.manifest),'source_root':str(args.source.resolve()),'ep18':args.ep18,
           'selection':'mean AUC; tie final' if args.tier==1 else 'all k pass; final only',
-          'canonical_export':'one new evaluate-only output per selected checkpoint; no score-based retries',
+          'canonical_export':('none; initial evaluation is fixed member 1' if args.ep18 else
+                              'one new evaluate-only output per selected checkpoint; no score-based retries'),
           'evaluator':evaluator_identity(Path(os.environ.get('FLASH_ROOT',ROOT/'external/video_to_data/robotic_grounding/flash_chord')))}
     args.out.mkdir(parents=True)
     prepare(plan,args.source.resolve(),args.out.resolve())
+    if args.ep18:
+        # The training invocation already evaluated the final once in its own process.
+        # Freeze it as member 1, and issue only the remaining two fresh processes.
+        for c in candidates:
+            source=args.source/c['source']/c['input']/'evaluation'
+            target=args.out/'cohort'/f"{c['name']}-r01"/c['arm']/c['input']/'evaluation'
+            shutil.copytree(source,target)
+        jobs=args.out/'jobs-cohort.txt'
+        jobs.write_text('\n'.join(line for line in jobs.read_text().splitlines()
+                                 if not line.split('|')[0].endswith('-r01'))+'\n')
     write(args.out/'plan.json',plan)
 
 def checked_plan(root):
@@ -79,6 +95,8 @@ def execute(args):
 
 def qualify(args):
     plan=checked_plan(args.out)
+    if plan['ep18']:
+        qualify_ep18(args.out,plan);return
     if not (args.out/'RUN_COMPLETE').exists():raise ValueError('cohort not completely executed')
     checked={r['name']:r for r in json.loads((args.out/'preparation.json').read_text())['checked']}
     actual={p.resolve() for p in (args.out/'cohort').rglob('trajectory.parquet')}
@@ -127,6 +145,68 @@ def qualify(args):
     write(args.out/'export-binding.json',{'selected_sha256':digest(args.out/'selected.json'),
           'checkpoints':{path:digest(path) for path in mapping.values()},'predetermined_root':'export'})
 
+def qualify_ep18(root,plan):
+    import pyarrow.parquet as pq
+    from ep18_pilot import PAIR
+    if plan['repeats']!=3 or {c['name'] for c in plan['candidates']}!=set(PAIR):
+        raise ValueError('invalid registered ep18 cohort')
+    checked={r['name']:r for r in json.loads((root/'preparation.json').read_text())['checked']}
+    results=[];expected=set()
+    for c in plan['candidates']:
+        members=[];identities=[]
+        for repeat in range(1,4):
+            result=root/'cohort'/f"{c['name']}-r{repeat:02d}"/c['arm']/c['input']/'evaluation'/c['sequence']/str(c['final_step'])
+            trajectory=result/'trajectory.parquet';expected.add(trajectory.resolve())
+            member={'repeat':repeat,'rollout':str(trajectory),'go':False}
+            try:
+                if trajectory.is_symlink():raise ValueError('separate evaluation artifacts required')
+                job=read_inputs(Path(plan['manifest']),[c['sequence']],[c['input']])[f"{c['input']}/{c['sequence']}"]
+                checkpoint=root/'cohort'/f"{c['name']}-r{repeat:02d}"/c['arm']/c['input']/'train'/c['sequence']/f"policy_{c['final_step']}.safetensors"
+                done=json.loads((result/'evaluation.done.json').read_text())
+                metrics=json.loads((result/'metrics.json').read_text())
+                h=digest(checkpoint)
+                identity={'checkpoint_sha256':h,'evaluator':plan['evaluator'],'input':c['input'],
+                    'training_reference':job['training'],'scoring_reference':job['scoring'],'support':job['support'],
+                    'trajectory_sha256':digest(trajectory),'metrics_sha256':digest(result/'metrics.json')}
+                if done!=identity or h!=checked[c['name']]['checkpoint_sha256'][str(c['final_step'])]:
+                    raise ValueError('checkpoint/runtime/input provenance mismatch')
+                if (metrics.get('checkpoint_sha256')!=h or metrics.get('world_count')!=1 or
+                    metrics.get('reset_mode')!='explicit' or metrics.get('environment_steps')!=c['final_step'] or
+                    metrics.get('non_finite_worlds')!=[]):raise ValueError('invalid evaluator protocol')
+                metadata=pq.ParquetFile(trajectory).schema_arrow.metadata or {}
+                keys=[b'flash_chord.checkpoint_sha256',b'flash_chord.eval_code_sha256',b'flash_chord.eval_script_sha256']
+                if any(not metadata.get(k) for k in keys) or metadata[keys[0]].decode()!=h:
+                    raise ValueError('invalid evaluator parquet provenance')
+                identities.append(tuple(metadata[k] for k in keys))
+                report=score_rollout(trajectory,Path(job['scoring']['path']))
+                reference,_,_,body=load_reference(Path(job['training']['path']))
+                if len(reference)!=858:raise ValueError('ep18 must retain all 858 source frames')
+                achieved=load_rollout(trajectory,858,body)
+                # Faithful carry checks from T3-POLICY/analyze_ep18.py inspect()/qualify().
+                drop=achieved[:300,2] < reference[0,2]-.2
+                early_drop=bool(np.any(np.convolve(drop.astype(int),np.ones(10,int),'valid')==10))
+                displacement=float(achieved[450,0]-achieved[300,0])
+                error450=float(np.linalg.norm(achieved[450,:3]-reference[450,:3]))
+                mppe=report['metrics']['MPPE']
+                if not all(math.isfinite(v) for v in report['metrics'].values()):raise ValueError('non-finite score')
+                member.update(frames=858,mppe_cm=mppe,early_drop=early_drop,
+                    x300_to450_m=displacement,position_error450_m=error450,
+                    go=bool(mppe<=10 and not early_drop and abs(displacement)>=.6 and error450<=.2))
+            except (OSError,ValueError,KeyError,TypeError) as error:
+                member['error']=str(error)
+            members.append(member)
+        same_evaluator=len(identities)==3 and len(set(identities))==1
+        results.append({'name':c['name'],'members':members,'same_checkpoint_and_evaluator':same_evaluator,
+                        'go':same_evaluator and all(m['go'] for m in members)})
+    actual={p.resolve() for p in (root/'cohort').rglob('trajectory.parquet')}
+    if actual-expected:
+        for result in results:result.update(go=False,error='extra cohort rollout; exactly k required')
+    output=root/'qualification.json'
+    if output.exists():raise ValueError('qualification already frozen')
+    write(output,{'candidates':results,'rule':'all three: 858 valid frames, MPPE <=10cm, no early drop, carry >=.60m, frame450 error <=.20m'})
+    if not all(r['go'] for r in results):raise ValueError('ep18 pair contains failed qualification; see qualification.json')
+
+
 def merge(args):
     if args.out.exists():raise ValueError('fresh release root required')
     metadata=list(map(json.loads,(args.tier_root/'meta/episodes_metadata.jsonl').read_text().splitlines()))
@@ -153,6 +233,7 @@ def merge(args):
 
 def export(args):
     plan=checked_plan(args.out)
+    if plan['ep18']:raise ValueError('ep18 pilot has no submission export')
     binding=json.loads((args.out/'export-binding.json').read_text())
     if evaluator_identity(Path(os.environ.get('FLASH_ROOT',ROOT/'external/video_to_data/robotic_grounding/flash_chord')))!=plan['evaluator']:
         raise ValueError('evaluator/runtime changed after cohort')

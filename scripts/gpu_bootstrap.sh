@@ -88,6 +88,7 @@ fi
 (cd external/video_to_data/robotic_grounding/flash_chord && \
     uv pip install -q --python "$PROJECT/.venv-flash/bin/python" -e ".[train,dev]")
 
+if [ "${BOOTSTRAP_CHALLENGE:-1}" = 1 ]; then
 echo "== Challenge data (Track 2 Tier 1/2, no videos)"
 .venv/bin/python - <<'EOF'
 from huggingface_hub import snapshot_download
@@ -96,6 +97,7 @@ snapshot_download("nvidia/video_to_data_challenge", repo_type="dataset", local_d
                                   "track_2/tier_2_synthetic_noise/*"],
                   ignore_patterns=["*/videos/*"])
 EOF
+fi
 
 echo "== Retarget Tier 1 and Tier 2 to G1"
 cpus=$(nproc)
@@ -126,7 +128,7 @@ PYREF
         scripts/retarget_tier.sh "data/challenge/track_2/$src" "data/work/$dst" "$jobs"
     fi
 done
-if [ -d data/work/tier2/sequences ]; then
+if [ "${BOOTSTRAP_CHALLENGE:-1}" = 1 ] && [ -d data/work/tier2/sequences ]; then
     echo "== Repair Tier 2 contact labels (idempotent)"
     .venv/bin/python scripts/contacts.py data/work/tier2
 fi

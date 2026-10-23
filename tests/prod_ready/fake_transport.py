@@ -57,6 +57,11 @@ elif tool=='fake_sync':
     if dest.startswith('root@'):
         for p in workspace.glob('*.sh'):p.write_text(remap(p.read_text()))
         remote=workspace/'v2d-track-2'
+        if os.environ.get('TRANSPORT_CORRUPT_CANDIDATE') and not (home/'candidate-corrupted').exists():
+            candidate=next(remote.glob('runs/*/input-assets/assets/**/data.parquet'),None)
+            if candidate is not None:
+                candidate.write_bytes(candidate.read_bytes()+b'changed in transport')
+                (home/'candidate-corrupted').touch()
         if (remote/'scripts/vast').exists():
             # GPU provision/download/install is a fixture boundary; it cannot run on this Mac.
             (remote/'scripts/gpu_bootstrap.sh').write_text('echo "GPU provision fixture BOOTSTRAP_TIERS=$BOOTSTRAP_TIERS"\n')

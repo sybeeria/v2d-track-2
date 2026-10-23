@@ -7,7 +7,7 @@ import pyarrow.parquet as pq
 ROOT=Path(os.environ['GPU_PROJECT'])
 args=dict(a.split('=',1) for a in sys.argv[2:] if '=' in a)
 def event(kind,**kw):
-    with open(os.environ['GPU_EVENTS'],'a') as f:f.write(json.dumps({'kind':kind,**kw})+'\n')
+    with open(os.environ['GPU_EVENTS'],'a') as f:f.write(json.dumps({'kind':kind,'pid':os.getpid(),**kw})+'\n')
 if sys.argv[1]=='-':print('false');sys.exit(0)
 if sys.argv[1].endswith('train_flash_sac.py'):
     out=Path(args['output_dir'].strip("'"));out.mkdir(parents=True,exist_ok=True)
@@ -36,6 +36,8 @@ else:
     if os.environ.get('GPU_FINAL_WORSE') and step==349999104:offset=.03
     if os.environ.get('GPU_BAD_REPEAT')==repeat:offset=.2
     achieved=ref.copy();achieved[:,0]+=offset
+    if os.environ.get('GPU_EP18_DROP50') and step==49999872 and repeat=='02':
+        achieved[10:20,2]=ref[0,2]-.201
     sys.path.insert(0,str(ROOT/'external/kit/v2d_submission_kit'))
     from v2dlb.submission_parquet import write_example
     n=len(ref);columns={k:np.zeros(n,dtype=np.int32) for k in ['environment_id','object_id','object_body_id']}
@@ -44,7 +46,7 @@ else:
     suffix=['position_x','position_y','position_z','quaternion_x','quaternion_y','quaternion_z','quaternion_w']
     for prefix,poses in [('achieved',achieved),('reference',ref)]:
         for i,name in enumerate(suffix):columns[prefix+'_'+name]=poses[:,i]
-    hash=hashlib.sha256(checkpoint.read_bytes()).hexdigest();episode=int(row['episode_index'])
+    hash=hashlib.sha256(checkpoint.read_bytes()).hexdigest();episode=int(row.get('episode_index',18))
     write_example(path,columns,episode_index=episode,eval_hash='a'*64,code_hash='b'*64,checkpoint_hash=hash)
     metrics={'checkpoint_sha256':hash,'world_count':1,'reset_mode':'explicit','environment_steps':step,'non_finite_worlds':[]}
     Path(args['evaluation.metrics_output']).write_text(json.dumps(metrics))
