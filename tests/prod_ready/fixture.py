@@ -25,7 +25,7 @@ class Fixture:
         for name in ['fake_provider','fake_remote','fake_sync','fake_pause','flock','nvidia-smi','wc']:
             p=bindir/name;shutil.copyfile(HERE/'fake_transport.py',p);p.chmod(0o755)
         import re
-        for name in ['launch.sh','watchdog.sh']:
+        for name in ['launch.sh','watchdog.sh','start_run.sh']:
             p=self.controller/'scripts/vast'/name;s=p.read_text()
             for a,b in [('vastai','fake_provider'),('ssh','fake_remote'),('rsync','fake_sync'),('sleep','fake_pause')]:s=re.sub(r'(?<!\.)\b'+a+r'\b',b,s)
             p.write_text(s)
@@ -98,8 +98,12 @@ class Fixture:
         return run,label,arm
     def command(self,args,env=None,timeout=40):
         return subprocess.run(args,cwd=self.controller,env={**self.env,**(env or {})},capture_output=True,text=True,timeout=timeout)
+    def instance(self,run):
+        # One rented instance per run directory, as in production; a relaunch of the same run keeps its instance.
+        ids=self.__dict__.setdefault('instance_ids',{})
+        return ids.setdefault(Path(run).resolve(),str(123+len(ids)))
     def launch(self,run,env=None):
-        p=self.command(['bash',str(self.controller/'scripts/vast/launch.sh'),str(run),'123'],env)
+        p=self.command(['bash',str(self.controller/'scripts/vast/launch.sh'),str(run),self.instance(run)],env)
         if p.returncode:raise AssertionError(p.stdout+p.stderr)
     def finished(self,run):
         log=self.workspace/f'{run.name}.log';end=time.monotonic()+60

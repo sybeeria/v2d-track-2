@@ -1,0 +1,1 @@
+export BUILD_SCREEN=0

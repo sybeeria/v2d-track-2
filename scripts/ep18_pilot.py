@@ -62,7 +62,7 @@ def admit(binding, output):
     print('EP18 INPUT PASS: all candidate files match staged SHA-256; self scoring; support disabled')
 
 
-def decide(qualification, output):
+def decision_record(qualification):
     try:
         results = json.loads(qualification.read_text())['candidates']
         by_name = {r['name']: r for r in results}
@@ -73,8 +73,12 @@ def decide(qualification, output):
         passed = dict.fromkeys(PAIR, False)
     decision = ('retain 50M' if passed['ep18-qualified50'] else
                 'selective rescue' if passed['ep18-qualified350'] else 'diagnose')
-    result = {'decision': decision, 'passes': passed, 'broad_tier3_policy_spend': False,
-              'qualification_sha256': digest(qualification) if qualification.is_file() else None}
+    return {'decision': decision, 'passes': passed, 'broad_tier3_policy_spend': False,
+            'qualification_sha256': digest(qualification) if qualification.is_file() else None}
+
+
+def decide(qualification, output):
+    result = decision_record(qualification)
     with output.open('x') as stream:
         stream.write(json.dumps(result, indent=2) + '\n')
     print(json.dumps(result, sort_keys=True))

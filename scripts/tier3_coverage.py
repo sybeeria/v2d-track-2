@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage and admit the Tier 3 coverage closure (decision D2): one frozen T2C-contact 50M job per bridge reference.
+"""Stage and admit all Tier 3 coverage inputs under decision D2 and the ep18 pilot verdict.
 
 jobs:  print the job lines for every PASS/HOLD entry of a bridge coverage_manifest.json.
 stage: copy the reference closures named by a jobs file into a launch payload, with SHA-256 binding.
@@ -12,11 +12,11 @@ import json
 import shutil
 from pathlib import Path
 
-from ep18_pilot import ASSETS as EP18_ASSETS, LABEL as EP18_LABEL, SEQUENCE as EP18_SEQUENCE
+from ep18_pilot import (ASSETS as EP18_ASSETS, LABEL as EP18_LABEL, SEQUENCE as EP18_SEQUENCE,
+                       READY, PAIR, decision_record, ARM_SHA256)
 
 ROOT = Path(__file__).resolve().parents[1]
 ARM = 'T2C-contact'
-ARMS_FILE = '../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt'
 FINAL_STEP = 49999872
 ROSTER = Path('data/challenge/track_2/tier_2_synthetic_noise/meta')  # Tier 3 shares Tier 2's episodes and frame grid
 ROSTER_FILES = ('episodes_metadata.jsonl', 'info.json')
@@ -60,13 +60,31 @@ def closure(root, sequence):
     return staged
 
 
-def entries(coverage):
+def checked_decision(path):
+    # Always explicit: a default would let tests and tools read or clobber tonight's real pulled pilot verdict.
+    path = Path(path)
+    record = json.loads(path.read_text())
+    expected = decision_record(path.parent / 'qualification/qualification.json')
+    if expected['qualification_sha256'] is None or record != expected:
+        raise ValueError('pilot decision missing its matching qualification')
+    return record
+
+
+def entries(coverage, decision):
     """One entry per covered episode; episode 18 is replaced by the pilot candidate."""
     manifest = json.loads(Path(coverage).read_text())
     if (manifest.get('tier'), manifest.get('scoring_mode')) != (3, 'self'):
         raise ValueError('not a Tier 3 self-scoring coverage manifest')
+    metadata = [json.loads(line) for line in (ROOT / ROSTER / ROSTER_FILES[0]).read_text().splitlines()]
+    roster = {r['episode_index']: (r['sequence_id'], r['frames']) for r in metadata}
+    if len(roster) != len(metadata) or len(roster) != json.loads((ROOT / ROSTER / 'info.json').read_text())['total_episodes']:
+        raise ValueError('invalid coverage roster')
     out = {}
     for entry in manifest['sequences']:
+        if entry['episode'] not in roster or roster[entry['episode']] != (entry['sequence'], entry['frames']):
+            raise ValueError(f"episode {entry['episode']}: coverage differs from the released roster")
+        if entry['gate']['status'] not in ('PASS', 'HOLD'):
+            raise ValueError(f"episode {entry['episode']}: only structurally valid PASS/HOLD references may be covered")
         (label, arm), = entry['arms'].items()
         reference = Path(arm['training_reference']['path'])
         if arm['clean_scoring_reference'] != arm['training_reference']:
@@ -82,21 +100,31 @@ def entries(coverage):
     out[18] = {'episode': 18, 'sequence': EP18_SEQUENCE, 'frames': 858, 'label': EP18_LABEL, 'root': ROOT / EP18_ASSETS,
                'gate': {'status': 'PILOT_CANDIDATE', 'reasons': ['registered ep18 pilot reference replaces the bridge output'],
                         'bridge': out.get(18, {}).get('gate')}}
+    if set(out) != set(roster):
+        raise ValueError(f'coverage missing episodes {sorted(set(roster)-set(out))}; repair them before any policy launch')
+    if decision['decision'] == 'selective rescue':
+        arm, step = PAIR['ep18-qualified350']
+        out[18].update(arm=arm, final_step=step)
     return out
 
 
 def job_line(entry):
-    return f"t3-ep{entry['episode']:02d}|{ARMS_FILE}|{ARM}|{entry['label']}|{entry['sequence']}|{FINAL_STEP}"
+    arm = entry.get('arm', ARM)
+    arms_file = f'../{READY}/generated/arms/{arm}.txt'
+    return f"t3-ep{entry['episode']:02d}|{arms_file}|{arm}|{entry['label']}|{entry['sequence']}|{entry.get('final_step', FINAL_STEP)}"
 
 
-def print_jobs(coverage):
-    for _, entry in sorted(entries(coverage).items()):
+def print_jobs(coverage, pilot_decision):
+    for _, entry in sorted(entries(coverage, checked_decision(pilot_decision)).items()):
         print(job_line(entry))
 
 
-def stage(coverage, jobs, payload, run_root):
+def stage(coverage, jobs, payload, run_root, pilot_decision):
     """Copy the closures for the episodes in `jobs` into payload/run_root/input-assets; return the binding path."""
-    covered = {job_line(e): e for e in entries(coverage).values()}
+    decision = checked_decision(pilot_decision)
+    covered = {job_line(e): e for e in entries(coverage, decision).values()}
+    recipes = {str(READY / f'generated/arms/{arm}.txt'): digest(ROOT / READY / f'generated/arms/{arm}.txt')
+               for arm in {line.split('|')[2] for line in covered}}
     lines = [line for line in Path(jobs).read_text().splitlines() if line and not line.startswith('#')]
     if not lines or len(set(lines)) != len(lines) or any(line not in covered for line in lines):
         raise ValueError('jobs must be distinct lines printed by `tier3_coverage.py jobs` for this coverage manifest')
@@ -118,8 +146,20 @@ def stage(coverage, jobs, payload, run_root):
     (payload / roster).mkdir(parents=True)
     for name in ROSTER_FILES:
         shutil.copyfile(ROOT / ROSTER / name, payload / roster / name)
+    arms = {}
+    for arm in sorted({line.split('|')[2] for line in lines}):
+        relative = READY / f'generated/arms/{arm}.txt'
+        if arm in ARM_SHA256 and digest(ROOT / relative) != ARM_SHA256[arm]:
+            raise ValueError('registered ep18 recipe changed')
+        (payload / relative).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / relative, payload / relative)
+        arms[str(relative)] = digest(payload / relative)
+        if arms[str(relative)] != recipes[str(relative)]:
+            raise ValueError('coverage recipe changed during staging')
     binding = inputs / 'binding.json'
     (payload / binding).write_text(json.dumps({'coverage_sha256': digest(coverage), 'episodes': episodes,
+        'ep18_sha256': {rel: digest(path) for rel, path in closure(ROOT / EP18_ASSETS, EP18_SEQUENCE).items()},
+        'pilot_decision': decision, 'arms': arms, 'recipes_sha256': recipes,
         'roster': {name: digest(payload / roster / name) for name in ROSTER_FILES}}, indent=2) + '\n')
     return binding
 
@@ -132,6 +172,9 @@ def support_enabled(path):
 
 def admit(binding, output):
     frozen = json.loads(Path(binding).read_text())
+    for relative, expected in frozen['arms'].items():
+        if digest(ROOT / relative) != expected:
+            raise ValueError('coverage arm changed')
     roster = Path(binding).parent / 'roster/meta'
     if {p.name for p in roster.iterdir()} != set(frozen['roster']) or any(
             digest(roster / name) != h for name, h in frozen['roster'].items()):
@@ -154,7 +197,10 @@ def admit(binding, output):
             'training_reference': record(reference), 'clean_scoring_reference': record(reference),
             'support': {**record(support), 'enabled': support_enabled(base / support)}}},
             'assets': [record(r) for r in sorted(episode['sha256']) if r not in (reference, support)]})
-    content = json.dumps({'schema_version': 1, 'tier': 3, 'scoring_mode': 'self', 'sequences': sequences}, indent=2) + '\n'
+    identity = {key: frozen[key] for key in ('coverage_sha256', 'ep18_sha256', 'pilot_decision', 'recipes_sha256')}
+    identity['roster_sha256'] = frozen['roster']
+    content = json.dumps({'schema_version': 1, 'tier': 3, 'scoring_mode': 'self',
+                          'tier3_coverage': identity, 'sequences': sequences}, indent=2) + '\n'
     output = Path(output)
     if output.exists() and output.read_text() != content:
         raise ValueError('frozen coverage manifest changed')
@@ -167,11 +213,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
     jobs = sub.add_parser('jobs'); jobs.add_argument('--coverage', type=Path, required=True)
+    jobs.add_argument('--pilot-decision', type=Path, required=True)
     pre = sub.add_parser('admit'); pre.add_argument('--binding', type=Path, required=True)
     pre.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
     try:
-        if args.action == 'jobs': print_jobs(args.coverage)
+        if args.action == 'jobs': print_jobs(args.coverage, args.pilot_decision)
         else: admit(args.binding, args.output)
     except (OSError, ValueError, KeyError) as error:
         parser.exit(1, f'error: {error}\n')

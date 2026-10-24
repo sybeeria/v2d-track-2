@@ -6,7 +6,7 @@ from pathlib import Path
 HERE=Path(__file__).resolve().parent;ROOT=HERE.parents[2]
 def main():
     p=argparse.ArgumentParser();p.add_argument('--tier',type=int,choices=[1,2,3],required=True);p.add_argument('--jobs',type=Path,required=True)
-    p.add_argument('--frozen-from',type=Path);p.add_argument('--coverage',type=Path,help='Tier 3 bridge coverage_manifest.json (decision D2); omit for the ep18 pilot');p.add_argument('--freeze-other-tier',action='store_true');p.add_argument('--k',type=int,default=3);p.add_argument('--name',required=True);args=p.parse_args()
+    p.add_argument('--frozen-from',type=Path);p.add_argument('--coverage',type=Path,help='Tier 3 bridge coverage_manifest.json (decision D2); omit for the ep18 pilot');p.add_argument('--pilot-decision',type=Path);p.add_argument('--freeze-other-tier',action='store_true');p.add_argument('--k',type=int,default=3);p.add_argument('--name',required=True);args=p.parse_args()
     if args.k<1:raise ValueError('k must be positive')
     if not args.name.replace('-','').replace('_','').isalnum():raise ValueError('unsafe run name')
     if args.tier==3:
@@ -99,9 +99,8 @@ def stage_tier3_coverage(args):
     out=HERE/'runs'/args.name
     if out.exists():raise ValueError('fresh controller directory required')
     payload=out/'payload'
-    binding=tier3_coverage.stage(args.coverage,args.jobs,payload,Path('runs')/args.name)
-    arms=HERE.relative_to(ROOT)/'generated/arms/T2C-contact.txt'
-    (payload/arms).parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(ROOT/arms,payload/arms)
+    if not args.pilot_decision:raise ValueError('Tier 3 coverage requires --pilot-decision (the pulled ep18 decision.json)')
+    binding=tier3_coverage.stage(args.coverage,args.jobs,payload,Path('runs')/args.name,args.pilot_decision)
     shutil.copyfile(args.jobs,out/'jobs.txt')
     (out/'env.sh').write_text('export BOOTSTRAP_TIERS=" "\nexport BOOTSTRAP_CHALLENGE=0\nexport BUILD_SCREEN=0\n')
     manifest=f'runs/{args.name}/manifest.json'

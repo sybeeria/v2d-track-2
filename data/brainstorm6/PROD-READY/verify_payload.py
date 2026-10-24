@@ -28,7 +28,9 @@ def verify_coverage(run,payload,binding,frozen):
     import hashlib
     inputs=Path('runs')/run.name/'input-assets'
     roster=inputs/'roster/meta'
-    allowed={binding.relative_to(payload),HERE.relative_to(ROOT)/'generated/arms/T2C-contact.txt'}|{roster/name for name in frozen['roster']}
+    registered={HERE.relative_to(ROOT)/'generated/arms'/f'{arm}.txt' for arm in ('T2C-contact','T3P-contact350')}
+    if not set(map(Path,frozen['arms'])) <= registered:raise ValueError('unexpected coverage arm')
+    allowed={binding.relative_to(payload)}|set(map(Path,frozen['arms']))|{roster/name for name in frozen['roster']}
     for episode in frozen['episodes']:
         if Path(episode['assets'])!=inputs/f"ep{episode['episode']:02d}/assets":raise ValueError('unexpected coverage asset root')
         allowed|={Path(episode['assets'])/rel for rel in episode['sha256']}
@@ -43,7 +45,9 @@ def verify_coverage(run,payload,binding,frozen):
             if hashlib.sha256((payload/episode['assets']/rel).read_bytes()).hexdigest()!=h:raise ValueError('coverage SHA-256 mismatch')
     for name,h in frozen['roster'].items():
         if hashlib.sha256((payload/roster/name).read_bytes()).hexdigest()!=h:raise ValueError('roster SHA-256 mismatch')
-    print(f"COVERAGE PAYLOAD PASS: {len(frozen['episodes'])} episodes, 1 arm, roster, 1 binding; no clean/Tier 1 files")
+    for relative,h in frozen['arms'].items():
+        if hashlib.sha256((payload/relative).read_bytes()).hexdigest()!=h:raise ValueError('coverage arm SHA-256 mismatch')
+    print(f"COVERAGE PAYLOAD PASS: {len(frozen['episodes'])} episodes, {len(frozen['arms'])} arm, roster, 1 binding; no clean/Tier 1 files")
 
 if len(sys.argv)>1:
     import argparse

@@ -163,7 +163,7 @@ class Ep18Pilot(unittest.TestCase):
             self.assertIn('no clean/Tier 1 data permitted',self.verify(clean,False).stderr)
             transport=self.f.home/'transport.jsonl'
             before=transport.read_bytes()
-            refused=self.f.command(['bash',str(self.f.controller/'scripts/vast/launch.sh'),str(clean),'123'])
+            refused=self.f.command(['bash',str(self.f.controller/'scripts/vast/launch.sh'),str(clean),self.f.instance(clean)])
             self.assertEqual(refused.returncode,1,refused.stdout+refused.stderr)
             self.assertIn('no clean/Tier 1 data permitted',refused.stderr)
             self.assertEqual(transport.read_bytes(),before)

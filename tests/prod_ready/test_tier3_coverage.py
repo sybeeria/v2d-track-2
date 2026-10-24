@@ -30,6 +30,19 @@ class Tier3Coverage(unittest.TestCase):
             shutil.copyfile(BASE/ROSTER/name, self.f.controller/ROSTER/name)
         roster = [json.loads(line) for line in (BASE/ROSTER/'episodes_metadata.jsonl').read_text().splitlines()]
         self.ep05 = next(r['sequence_id'] for r in roster if r['episode_index'] == 5)
+        # This is an explicitly two-episode fixture roster; production admission requires its whole roster.
+        metadata = [{**r, 'frames': 858} for r in roster if r['episode_index'] in (5, 18)]
+        (self.f.controller/ROSTER/'episodes_metadata.jsonl').write_text(''.join(json.dumps(r)+'\n' for r in metadata))
+        info = json.loads((self.f.controller/ROSTER/'info.json').read_text()); info['total_episodes'] = 2
+        (self.f.controller/ROSTER/'info.json').write_text(json.dumps(info))
+        pilot = self.f.controller/READY/'runs/ep18-pilot-d1/pulled/ep18-pilot-d1'
+        qualification = pilot/'qualification/qualification.json'; qualification.parent.mkdir(parents=True)
+        qualification.write_text(json.dumps({'candidates': [{'name': name, 'go': True, 'members': [{'go': True}]*3}
+            for name in ('ep18-qualified50', 'ep18-qualified350')]}))
+        decision = self.f.command([sys.executable, '-B', str(self.f.controller/'scripts/ep18_pilot.py'), 'decide',
+                                  '--qualification', str(qualification), '--output', str(pilot/'decision.json')])
+        self.assertEqual(decision.returncode, 0, decision.stdout+decision.stderr)
+        self.pilot_decision = pilot/'decision.json'
         # A bridge output: ep05 materialized (candidate files under ep05's name) and its own ep18 variant.
         self.bridge = Path(self.temp.name)/'bridge'
         entries = [self.materialize(5, self.ep05, 'tier3_rest_repaired', 'HOLD'),
@@ -64,7 +77,7 @@ class Tier3Coverage(unittest.TestCase):
         return result
 
     def jobs(self):
-        lines = self.command(self.f.controller/'scripts/tier3_coverage.py', 'jobs', '--coverage', self.coverage).stdout
+        lines = self.command(self.f.controller/'scripts/tier3_coverage.py', 'jobs', '--coverage', self.coverage, '--pilot-decision', self.pilot_decision).stdout
         path = Path(self.temp.name)/'jobs.txt'; path.write_text(lines)
         return path, lines.splitlines()
 
@@ -73,7 +86,7 @@ class Tier3Coverage(unittest.TestCase):
         arms = '../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt'
         self.assertEqual(lines, [f't3-ep05|{arms}|T2C-contact|tier3_rest_repaired|{self.ep05}|49999872',
                                  f't3-ep18|{arms}|T2C-contact|tier3_support_static|{EP18}|49999872'])
-        self.command(self.f.controller/READY/'make_run.py', '--tier', '3', '--coverage', self.coverage,
+        self.command(self.f.controller/READY/'make_run.py', '--tier', '3', '--coverage', self.coverage, '--pilot-decision', self.pilot_decision,
                      '--jobs', jobs, '--name', 't3cov')
         run = self.f.controller/READY/'runs/t3cov'
         self.assertEqual(self.command(self.f.controller/READY/'verify_payload.py', '--pilot', run).stdout.strip(),
@@ -97,10 +110,10 @@ class Tier3Coverage(unittest.TestCase):
         jobs, lines = self.jobs()
         forged = Path(self.temp.name)/'forged.txt'
         forged.write_text(lines[0].replace('tier3_rest_repaired', 'tier3_raw') + '\n')
-        self.command(self.f.controller/READY/'make_run.py', '--tier', '3', '--coverage', self.coverage,
+        self.command(self.f.controller/READY/'make_run.py', '--tier', '3', '--coverage', self.coverage, '--pilot-decision', self.pilot_decision,
                      '--jobs', forged, '--name', 'forged', ok=False)
         self.assertFalse((self.f.controller/READY/'runs/forged/payload').exists())
-        self.command(self.f.controller/READY/'make_run.py', '--tier', '3', '--coverage', self.coverage,
+        self.command(self.f.controller/READY/'make_run.py', '--tier', '3', '--coverage', self.coverage, '--pilot-decision', self.pilot_decision,
                      '--jobs', jobs, '--name', 'tampered')
         run = self.f.controller/READY/'runs/tampered'
         (run/'payload/runs/tampered/input-assets/extra.txt').write_text('x')
@@ -115,11 +128,11 @@ class Tier3Coverage(unittest.TestCase):
         entries['sequences'][0]['arms']['tier3_rest_repaired']['training_reference']['sha256'] = sha(reference)
         entries['sequences'][0]['arms']['tier3_rest_repaired']['clean_scoring_reference']['sha256'] = sha(reference)
         self.coverage.write_text(json.dumps(entries))
-        self.command(self.f.controller/READY/'make_run.py', '--tier', '3', '--coverage', self.coverage,
+        self.command(self.f.controller/READY/'make_run.py', '--tier', '3', '--coverage', self.coverage, '--pilot-decision', self.pilot_decision,
                      '--jobs', jobs, '--name', 'outside', ok=False)
         with reference.open('ab') as stream: stream.write(b'\0')
         self.assertIn('reference changed', self.command(self.f.controller/'scripts/tier3_coverage.py', 'jobs',
-                                                        '--coverage', self.coverage, ok=False).stderr)
+                                                        '--coverage', self.coverage, '--pilot-decision', self.pilot_decision, ok=False).stderr)
 
 
 if __name__ == '__main__':

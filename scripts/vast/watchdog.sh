@@ -11,14 +11,26 @@ D=$(cd "${1:?run dir}" && pwd) cap=${2:?cap dollars} floor=${3:-1}
 name=$(basename "$D")
 read -r id host port < "$D/host"
 if [ "${WATCHDOG_LOCKED:-}" != "$D" ]; then
-    exec python3 - "$0" "$D" "$@" <<'PYWATCHLOCK'
+    exec python3 - "$0" "$D" "$id" "$@" <<'PYWATCHLOCK'
 import fcntl, os, sys
-lock = open(os.path.join(sys.argv[2], '.watchdog.lock'), 'a')
-try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-except BlockingIOError: sys.exit('another watchdog owns this run directory')
-os.set_inheritable(lock.fileno(), True)
+from pathlib import Path
+instance = sys.argv[3]
+if not instance.isdecimal(): sys.exit('invalid instance id')
+shared = Path(sys.argv[1]).resolve().parents[2] / 'data/vast-controller-locks'
+shared.mkdir(parents=True, exist_ok=True)
+locks = [open(os.path.join(sys.argv[2], '.watchdog.lock'), 'a'), open(shared / (instance + '.lock'), 'a')]
+for lock in locks:
+    try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError: sys.exit('a launch or watchdog already owns this run or instance')
+    if lock is locks[1]:
+        previous = Path(lock.name).read_text().strip()
+        owner = Path(sys.argv[2]).resolve()
+        if previous and previous != str(owner) and not (Path(previous) / 'STOPPED').exists():
+            sys.exit('instance has an unfinished run binding; resume that run directory')
+        lock.truncate(0); lock.write(str(owner) + '\n'); lock.flush()
+    os.set_inheritable(lock.fileno(), True)
 os.environ['WATCHDOG_LOCKED'] = sys.argv[2]
-os.execvp('bash', ['bash', sys.argv[1], *sys.argv[3:]])
+os.execvp('bash', ['bash', sys.argv[1], *sys.argv[4:]])
 PYWATCHLOCK
 fi
 # Bound wall time as well as socket inactivity: a live remote process can hang forever.
@@ -46,10 +58,15 @@ with subprocess.Popen(sys.argv[1:], start_new_session=True, close_fds=False) as 
         sys.exit(124)
 PYBOUND
 }
+# Billing custody starts while the container is provisioning; SSH can become ready on a later cycle.
+remote() { [ -n "$host" ] && [ -n "$port" ] || return 1; bounded ssh "$@"; }
+
 ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=2 -i "$HOME/.ssh/id_ed25519" -p "$port")
-read -r start rate < <(bounded vastai show instance "$id" --raw | python3 -I -c "import json,sys,math; o=json.load(sys.stdin); s,r=float(o['start_date']),float(o['dph_total']); assert math.isfinite(s) and s>0 and math.isfinite(r) and r>0; print(s,r)") || {
-    echo "cannot read valid instance start/rate; watchdog not armed" >&2; exit 1;
-}
+for attempt in 1 2 3; do
+    if read -r start rate < <(bounded vastai show instance "$id" --raw | python3 -I -c "import json,sys,math; o=json.load(sys.stdin); s,r=float(o['start_date']),float(o['dph_total']); assert math.isfinite(s) and s>0 and math.isfinite(r) and r>0; print(s,r)"); then break; fi
+    [ "$attempt" -lt 3 ] || { echo "cannot read valid instance start/rate; watchdog not armed" >&2; exit 1; }
+    sleep 5
+done
 python3 -I -c "import sys,math; c,f=map(float,sys.argv[1:]); assert all(math.isfinite(x) and x>=0 for x in (c,f))" "$cap" "$floor" || exit 2
 # The box-side backstop (scripts/vast/deadman.sh) stops the instance 30 min past the cap if this watchdog cannot.
 deadline=$(python3 -I -c "import sys; s,c,r=map(float,sys.argv[1:]); print(int(s + c / r * 3600 + 1800))" "$start" "$cap" "$rate")
@@ -62,17 +79,19 @@ log() { echo "$(date -u +%FT%TZ) $*" >> "$D/watchdog.log"; }
 arm_deadman() {
     local grace=$(( 10 * ${WATCHDOG_COMMAND_TIMEOUT_SECONDS:-120} + 1200 )); [ "$grace" -ge 5400 ] || grace=5400
     [ ! -e "$D/KEEP" ] || grace=0
-    bounded ssh -n "${ssh_opts[@]}" root@"$host" "echo $deadline $grace > /workspace/$name.deadline.tmp && mv /workspace/$name.deadline.tmp /workspace/$name.deadline &&
+    remote -n "${ssh_opts[@]}" root@"$host" "echo $deadline $grace > /workspace/$name.deadline.tmp && mv /workspace/$name.deadline.tmp /workspace/$name.deadline &&
         { setsid nohup bash /workspace/v2d-track-2/scripts/vast/deadman.sh $name >> /workspace/$name.deadman.log 2>&1 < /dev/null & }" \
         >> "$D/watchdog.log" 2>&1 || log "cannot arm box deadman"
 }
 
 pull() {
+    [ -n "$host" ] && [ -n "$port" ] || return 1
     arm_deadman
     bounded rsync -az --partial-dir=.rsync-partial --timeout=90 -e "ssh ${ssh_opts[*]}" --exclude build --exclude '.staging' --exclude '.rsync-partial' --exclude '.batch.lock' --exclude '*.lock' --exclude '.*.tmp' --exclude 'state_*.safetensors' --exclude 'replay_*.safetensors' --exclude '*.ckpt' --exclude '*.pt' \
         root@"$host":/workspace/v2d-track-2/runs/"$name" "$D/pulled/" 2>> "$D/watchdog.log" || return 1
-    # Actors are small; compact learner state dominates disk. Keep two immutable state generations per policy.
-    if ! bounded ssh -n "${ssh_opts[@]}" root@"$host" "python3 - /workspace/v2d-track-2/runs/$name <<'PYSTATES'
+    # A checkpoint can commit after the bulk pull. Copy each selected state with its matching actor.
+    # Compact learner state dominates disk; keep two immutable state generations per policy.
+    if ! remote -n "${ssh_opts[@]}" root@"$host" "python3 - /workspace/v2d-track-2/runs/$name <<'PYSTATES'
 from pathlib import Path
 import re, sys
 root = Path(sys.argv[1])
@@ -84,6 +103,7 @@ for path in root.rglob('state_*.safetensors'):
 for directory in sorted(groups):
     for _, path in sorted(groups[directory])[-2:]:
         print(path.relative_to(root).as_posix())
+        print(path.with_name(path.name.replace('state_', 'policy_', 1)).relative_to(root).as_posix())
 PYSTATES" > "$D/.state-files" 2>> "$D/watchdog.log"; then return 1; fi
     bounded rsync -az --timeout=90 -e "ssh ${ssh_opts[*]}" --files-from="$D/.state-files" \
         root@"$host":/workspace/v2d-track-2/runs/"$name"/ "$D/pulled/$name/" 2>> "$D/watchdog.log" || return 1
@@ -117,7 +137,7 @@ PYPULLRECEIPT
 destroy() {
     local hard=${2:-}
     # A dead parent can leave a live trainer; stop its entire setsid group on every exit path.
-    if ! bounded ssh -n "${ssh_opts[@]}" root@"$host" "
+    if ! remote -n "${ssh_opts[@]}" root@"$host" "
             read -r pid < /workspace/$name.pid || exit 1
             case \"\$pid\" in ''|*[!0-9]*) exit 1;; esac
             [ \"\$pid\" -gt 1 ] || exit 1
@@ -146,14 +166,16 @@ progress_before=
 progress_since=$(date +%s)
 log "watchdog start id=$id rate=$rate cap=$cap floor=$floor"
 while true; do
+    if read -r bound_id next_host next_port < "$D/host" && [ "$bound_id" = "$id" ]; then host=$next_host; port=$next_port; fi
+    ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=2 -i "$HOME/.ssh/id_ed25519" -p "$port")
     spend=$(python3 -I -c "import time; print(max(0,time.time()-$start)/3600*$rate)")
     credit=$(bounded vastai show user --raw 2>/dev/null | python3 -I -c "import json,sys; print(float(json.load(sys.stdin)['credit']))" 2>/dev/null)
-    state=$(bounded ssh -n "${ssh_opts[@]}" root@"$host" "
+    state=$(remote -n "${ssh_opts[@]}" root@"$host" "
         if grep -q '^box done' /workspace/$name.log; then echo done
         elif grep -q '^box failed' /workspace/$name.log; then echo failed
         elif pgrep -f '[/]workspace/$name.sh' > /dev/null; then echo running
         else echo dead; fi" 2>/dev/null | tail -1)
-    bounded ssh -n "${ssh_opts[@]}" root@"$host" "
+    remote -n "${ssh_opts[@]}" root@"$host" "
         grep -E '^(box|bootstrap|screen) ' /workspace/$name.log | tail -1
         grep -E '^GPU [0-9]+: ' /workspace/$name.log | tail -2
         for f in \$(ls -t \$(find /workspace/v2d-track-2/runs/$name -name train.log 2>/dev/null) 2>/dev/null | head -2); do
@@ -162,7 +184,7 @@ while true; do
     log "state=${state:-unreachable} spend=\$$spend credit=\$${credit:-?} $(tr '\n' '|' < "$D/status.txt" | cut -c1-400)"
     pull
     if [ "$state" = running ]; then
-        active=$(bounded ssh -n "${ssh_opts[@]}" root@"$host" "python3 - /workspace/v2d-track-2/runs/$name <<'PYJOBS'
+        active=$(remote -n "${ssh_opts[@]}" root@"$host" "python3 - /workspace/v2d-track-2/runs/$name <<'PYJOBS'
 import json, sys
 from pathlib import Path
 root = Path(sys.argv[1]).resolve()
@@ -203,7 +225,7 @@ temporary.write_text(json.dumps(current)); temporary.replace(path)
 print("stalled" if stalled else "active")' "$D/job-progress-$id.json" "$(date +%s)")
             if [ "$stalled" = stalled ] && [ ! -e "$D/KEEP" ]; then destroy "job no progress for 60 min"; fi
         fi
-        progress=$(bounded ssh -n "${ssh_opts[@]}" root@"$host" "
+        progress=$(remote -n "${ssh_opts[@]}" root@"$host" "
             grep -E '^(box|bootstrap|screen|GPU [0-9]+:) ' /workspace/$name.log
             find /workspace/v2d-track-2/runs/$name -name train.log -exec sh -c 'grep -a \"^training progress\" \"\$1\" | tail -1' sh {} \;
             find /workspace/v2d-track-2/runs/$name -type f \( -name 'policy_*.safetensors' -o -name scores.json -o -name metrics.json -o -name '*.done.json' -o -name result.json \) -printf '%p %T@ %s\n'

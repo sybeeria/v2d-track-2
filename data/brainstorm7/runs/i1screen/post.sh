@@ -164,4 +164,4 @@ cat > runs/i1screen/repeat_plan.json <<'PLAN'
 }
 PLAN
 .venv/bin/python -B scripts/prepare_repeats.py --plan runs/i1screen/repeat_plan.json --source-root runs/i1screen --out-root runs/i1screen/repeats
-JOBS_FILE=runs/i1screen/repeats/jobs-i1.txt scripts/test_day.sh "$(nvidia-smi -L | wc -l)" runs/i1screen/repeats/i1
+PILOT_EVALUATE_ONLY=1 JOBS_FILE=runs/i1screen/repeats/jobs-i1.txt scripts/test_day.sh "$(nvidia-smi -L | wc -l)" runs/i1screen/repeats/i1

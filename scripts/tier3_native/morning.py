@@ -40,7 +40,10 @@ def main():
     if shutil.disk_usage(a.run).free + backed_up < 150 * 1024**3:
         raise ValueError('reserve 150 GiB Mac capacity including an existing restored backup')
     # This is a real provider call, deliberately confined to this explicitly invoked morning command.
-    instance = json.loads(subprocess.check_output(['vastai', 'show', 'instance', str(a.instance_id), '--raw']))
+    try:
+        instance = json.loads(subprocess.check_output(['vastai', 'show', 'instance', str(a.instance_id), '--raw'], timeout=20))
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError('provider lookup timed out before watchdog armed; the rented instance needs manual inspection/stop') from error
     rate = float(instance['dph_total'])
     if not 0 < rate <= a.hourly_rate_ceiling:
         raise ValueError('offer hourly rate exceeds frozen ceiling')
@@ -71,7 +74,7 @@ def main():
         if watchdog.poll() is not None or (a.run / 'STOPPED').exists():
             raise RuntimeError('watchdog stopped before launch; no writer started')
         launch = subprocess.Popen(['bash', str(ROOT / 'scripts/vast/launch.sh'), str(a.run), str(a.instance_id)],
-                                  stdout=f, stderr=subprocess.STDOUT, env={**os.environ, 'LAUNCH_LOCKED': str(a.run)})
+                                  stdout=f, stderr=subprocess.STDOUT, env={**os.environ, 'LAUNCH_LOCKED': str(a.run), 'VAST_GUARDED_LAUNCH': '1'})
         if launch.wait():
             raise RuntimeError('launch failed; watchdog remains active to enforce cap/floor')
         if watchdog.poll() is not None or (a.run / 'STOPPED').exists():
@@ -80,7 +83,7 @@ def main():
         while True:
             receipt = a.run / 'pull.success.json'
             if ((canary / 'result.json').exists() and receipt.exists()
-                and json.loads(receipt.read_text()).get('canary', {}).get('session_id') == session['session_id']
+                and (json.loads(receipt.read_text()).get('canary') or {}).get('session_id') == session['session_id']
                 and json.loads((canary / 'result.json').read_text()).get('session_id') == session['session_id']):
                 break
             if watchdog.poll() is not None:
@@ -111,8 +114,8 @@ def main():
         approval = {**session, 'canary_sha256': result['initializers_sha256']}
         atomic(a.run / 'GO.json', approval)
         _, host, port = (a.run / 'host').read_text().split()
-        subprocess.run(['rsync', '-az', '-e', f'ssh -i {Path.home()}/.ssh/id_ed25519 -p {port} -o StrictHostKeyChecking=accept-new', str(a.run / 'GO.json'),
-                        f'root@{host}:/workspace/v2d-track-2/runs/{a.run.name}/episodes/GO.json'], check=True)
+        run(['rsync', '-az', '-e', f'ssh -i {Path.home()}/.ssh/id_ed25519 -p {port} -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=2', str(a.run / 'GO.json'),
+             f'root@{host}:/workspace/v2d-track-2/runs/{a.run.name}/episodes/GO.json'], a.run / 'go_transfer.log', timeout=120)
         print('Canary GO: native execution/provenance only; reference quality remains separately gated.', flush=True)
         code = watchdog.wait()
         if code or (a.run / 'BACKUP_FAILED').exists() or not (a.run / 'STOPPED').exists():

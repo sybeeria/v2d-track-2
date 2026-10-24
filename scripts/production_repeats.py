@@ -13,8 +13,8 @@ from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
 from prepare_repeats import prepare
-from pilot_queue import read_arms, read_inputs, evaluator_identity
-from score_rollout import score_rollout, load_reference, load_rollout
+from pilot_queue import read_arms, read_inputs, evaluator_identity, checked_record
+from score_rollout import score_rollout, load_reference, load_rollout, write_json
 import numpy as np
 
 
@@ -27,7 +27,7 @@ def tier1_choice(metrics,final):
     clear=[step for step in metrics if step!=final and mean(step,'AUC')>=mean(final,'AUC')+.05
            and mean(step,'SP-SR')>=mean(final,'SP-SR') and mean(step,'MP-SR')>=mean(final,'MP-SR') and mean(step,'MPPE')<=mean(final,'MPPE')]
     return max(clear,key=lambda step:mean(step,'AUC')) if clear else final
-def write(p,value):p.write_text(json.dumps(value,indent=2)+'\n')
+def write(p,value):write_json(p,value)
 def invoke(cmd,env=None):subprocess.run(cmd,cwd=ROOT,env={**os.environ,**(env or {})},check=True)
 
 def stage(args):
@@ -47,16 +47,23 @@ def stage(args):
             raise ValueError('Tier 1 requires frozen F6/clean')
         if args.tier==2 and (arm not in ('T2C-contact','T2C-contact-seed43') or label!='raw_repaired'):
             raise ValueError('Tier 2 requires frozen T2C-contact/raw_repaired')
-        if args.tier in (2,3) and total!=49999872 and not args.ep18:
-            raise ValueError('Tier 2/3 production uses the frozen 50M final')
+        registered_rescue=False
         if args.tier in (2,3):
             raw=json.loads(args.manifest.read_text())
+            if args.tier==3 and not args.ep18:
+                from ep18_pilot import SEQUENCE,LABEL,PAIR,ARM_SHA256
+                rescue_arm,rescue_step=PAIR['ep18-qualified350']
+                registered_rescue=(seq==SEQUENCE and label==LABEL and arm==rescue_arm and total==rescue_step
+                    and raw.get('tier3_coverage',{}).get('pilot_decision',{}).get('decision')=='selective rescue'
+                    and digest(ROOT/'scripts'/arms_file)==ARM_SHA256[rescue_arm])
             for entry in raw['sequences']:
                 if entry['sequence']==seq and label in entry['arms']:
                     for key in ('training_reference','clean_scoring_reference'):
                         path=(ROOT/entry['arms'][label][key]['path']).resolve()
                         if any(part=='tier1' or 'tier_1' in part for part in path.parts):
                             raise ValueError('hard-tier input path names Tier 1')
+        if args.tier in (2,3) and total!=49999872 and not args.ep18 and not registered_rescue:
+            raise ValueError('Tier 2/3 production uses the frozen 50M final, except the registered ep18 selective rescue')
         inputs=read_inputs(args.manifest,[seq],[label])
         if args.tier in (2,3) and any(j['training']!=j['scoring'] for j in inputs.values()):
             raise ValueError('hard tiers require own-input scoring')
@@ -96,6 +103,16 @@ def checked_plan(root):
     if digest(plan['manifest'])!=plan['manifest_sha256']:raise ValueError('frozen manifest changed')
     return plan
 
+def sequence_inputs(entry):
+    # Coverage shards name host-specific paths; the bytes they bind must still match across primary and rescue.
+    return (entry['frames'],{label:(arm['training_reference']['sha256'],arm['clean_scoring_reference']['sha256'],
+            arm['support']['sha256'],arm['support']['enabled']) for label,arm in entry['arms'].items()},
+            sorted(asset['sha256'] for asset in entry.get('assets',[])))
+
+def regular_member(root,path):
+    if path.resolve()!=root.resolve()/path.relative_to(root) or path.stat().st_nlink!=1:
+        raise ValueError('separate regular cohort artifacts required')
+
 def execute(args):
     plan=checked_plan(args.out)
     if (args.out/'RUN_STARTED').exists():raise ValueError('cohort already attempted; retain it, diagnose failure')
@@ -118,7 +135,7 @@ def qualify(args):
             base=args.out/'cohort'/f"{c['name']}-r{repeat:02d}"/c['arm']/c['input']
             for step in c['steps']:
                 result=base/'evaluation'/c['sequence']/str(step)
-                trajectory=result/'trajectory.parquet';expected.add(trajectory.resolve())
+                trajectory=result/'trajectory.parquet';regular_member(args.out,trajectory);expected.add(trajectory.resolve())
                 checkpoint=base/'train'/c['sequence']/f'policy_{step}.safetensors'
                 done=json.loads((result/'evaluation.done.json').read_text());metrics=json.loads((result/'metrics.json').read_text())
                 job=read_inputs(Path(plan['manifest']),[c['sequence']],[c['input']])[f"{c['input']}/{c['sequence']}"]
@@ -160,7 +177,7 @@ def qualify(args):
             vetoes.append({'episode':c['episode'],'sequence':c['sequence'],'name':c['name'],'status':status,
                            'checkpoint_sha256':digest(checkpoint),'members':members})
     if actual!=expected:raise ValueError('missing or extra cohort rollout; exactly k required')
-    if (args.out/'selected.json').exists():raise ValueError('selection already frozen')
+    if (args.out/'export-binding.json').exists():raise ValueError('selection already frozen')
     write(args.out/'selected.json',mapping);write(args.out/'selection.json',summary)
     if plan['tier']!=1:
         order={'catastrophe':0,'orientation':1}
@@ -194,7 +211,7 @@ def qualify_ep18(root,plan):
             trajectory=result/'trajectory.parquet';expected.add(trajectory.resolve())
             member={'repeat':repeat,'rollout':str(trajectory),'go':False}
             try:
-                if trajectory.is_symlink():raise ValueError('separate evaluation artifacts required')
+                regular_member(root,trajectory)
                 job=read_inputs(Path(plan['manifest']),[c['sequence']],[c['input']])[f"{c['input']}/{c['sequence']}"]
                 checkpoint=root/'cohort'/f"{c['name']}-r{repeat:02d}"/c['arm']/c['input']/'train'/c['sequence']/f"policy_{c['final_step']}.safetensors"
                 done=json.loads((result/'evaluation.done.json').read_text())
@@ -247,10 +264,14 @@ def merge(args):
     metadata=list(map(json.loads,(args.tier_root/'meta/episodes_metadata.jsonl').read_text().splitlines()))
     total=json.loads((args.tier_root/'meta/info.json').read_text())['total_episodes']
     if sorted(r['episode_index'] for r in metadata)!=list(range(total)):raise ValueError('invalid release roster')
-    mapping={};parents=[];common=None;status={}
+    mapping={};parents=[];common=None;status={};combined=None;combined_sequences={};candidates=[]
+    def input_identity(plan):
+        manifest=json.loads(Path(plan['manifest']).read_text())
+        coverage=manifest.get('tier3_coverage') if plan['tier']==3 else None
+        return coverage if coverage is not None else plan['manifest_sha256']
     for cohort in args.cohort:
         plan=checked_plan(cohort)
-        key=(plan['tier'],plan['manifest_sha256'],plan['evaluator'],plan['repeats'])
+        key=(plan['tier'],input_identity(plan),plan['evaluator'],plan['repeats'])
         if common is not None and common!=key:raise ValueError('release cohort protocol/input/runtime differs')
         common=key
         selected=json.loads((cohort/'selected.json').read_text());binding=json.loads((cohort/'export-binding.json').read_text())
@@ -258,6 +279,13 @@ def merge(args):
         if any(digest(p)!=h for p,h in binding['checkpoints'].items()):raise ValueError('selected policy changed')
         if set(mapping)&set(selected):raise ValueError('duplicate release episodes')
         if plan['tier']!=1:status.update(bound_vetoes(cohort,selected,binding))
+        if plan['tier']==3 and isinstance(key[1],dict):
+            content=json.loads(Path(plan['manifest']).read_text())
+            combined=content
+            for entry in content['sequences']:
+                if entry['sequence'] in combined_sequences:raise ValueError('duplicate coverage input sequence')
+                combined_sequences[entry['sequence']]=entry
+            candidates.extend(plan['candidates'])
         mapping.update(selected);parents.append({'cohort':str(cohort.resolve()),'selection_sha256':binding['selected_sha256']})
     if set(mapping)!=set(map(str,range(total))):raise ValueError('release needs every episode exactly once')
     rank={'pass':0,'orientation':1,'catastrophe':2}
@@ -265,8 +293,12 @@ def merge(args):
     evaluated={episode:{v['checkpoint_sha256']} for episode,v in status.items()}
     for cohort in args.rescue or []:  # earliest seed first; a later one replaces only a strictly worse class
         rescue=checked_plan(cohort)
-        if (rescue['tier'],rescue['manifest_sha256'],rescue['evaluator'],rescue['repeats'])!=common or common[0]==1:
+        if (rescue['tier'],input_identity(rescue),rescue['evaluator'],rescue['repeats'])!=common or common[0]==1:
             raise ValueError('rescue cohort protocol/input/runtime differs, or Tier 1')
+        if combined is not None and any(entry['sequence'] not in combined_sequences or
+                sequence_inputs(entry)!=sequence_inputs(combined_sequences[entry['sequence']])
+                for entry in json.loads(Path(rescue['manifest']).read_text())['sequences']):
+            raise ValueError('rescue cohort episode inputs differ')
         selected=json.loads((cohort/'selected.json').read_text());binding=json.loads((cohort/'export-binding.json').read_text())
         if digest(cohort/'selected.json')!=binding['selected_sha256']:raise ValueError('selection changed')
         if any(digest(p)!=h for p,h in binding['checkpoints'].items()):raise ValueError('selected policy changed')
@@ -283,12 +315,19 @@ def merge(args):
     write(args.out/'export-binding.json',{'selected_sha256':digest(args.out/'selected.json'),
           'checkpoints':{path:digest(path) for path in mapping.values()},'predetermined_root':'export'})
     if outcome:write(args.out/'veto.json',{'episodes':outcome})
+    if combined is not None:
+        target=args.out/'manifest.json'
+        write(target,{**combined,'sequences':[combined_sequences[s] for s in sorted(combined_sequences)]})
+        plan={**plan,'manifest':str(target.resolve()),'manifest_sha256':digest(target),'candidates':candidates}
     write(args.out/'plan.json',{**plan,'source_root':str(ROOT/'runs'),'parents':parents})
 
 
 def export(args):
     plan=checked_plan(args.out)
     if plan['ep18']:raise ValueError('ep18 pilot has no submission export')
+    for entry in json.loads(Path(plan['manifest']).read_text())['sequences']:
+        read_inputs(Path(plan['manifest']),[entry['sequence']],list(entry['arms']))
+        for asset in entry.get('assets',[]):checked_record(asset)
     binding=json.loads((args.out/'export-binding.json').read_text())
     if evaluator_identity(Path(os.environ.get('FLASH_ROOT',ROOT/'external/video_to_data/robotic_grounding/flash_chord')))!=plan['evaluator']:
         raise ValueError('evaluator/runtime changed after cohort')

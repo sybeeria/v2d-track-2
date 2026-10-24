@@ -13,10 +13,22 @@ name=$(basename "$D")
 if [ "${LAUNCH_LOCKED:-}" != "$D" ]; then
     exec python3 - "$0" "$D" "$@" <<'PYLAUNCHLOCK'
 import fcntl, os, sys
-lock = open(os.path.join(sys.argv[2], '.watchdog.lock'), 'a')
-try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-except BlockingIOError: sys.exit('a launch or watchdog already owns this run directory')
-os.set_inheritable(lock.fileno(), True)
+from pathlib import Path
+instance = sys.argv[4]
+if not instance.isdecimal(): sys.exit('invalid instance id')
+shared = Path(sys.argv[1]).resolve().parents[2] / 'data/vast-controller-locks'
+shared.mkdir(parents=True, exist_ok=True)
+locks = [open(os.path.join(sys.argv[2], '.watchdog.lock'), 'a'), open(shared / (instance + '.lock'), 'a')]
+for lock in locks:
+    try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError: sys.exit('a launch or watchdog already owns this run or instance')
+    if lock is locks[1]:
+        previous = Path(lock.name).read_text().strip()
+        owner = Path(sys.argv[2]).resolve()
+        if previous and previous != str(owner) and not (Path(previous) / 'STOPPED').exists():
+            sys.exit('instance has an unfinished run binding; resume that run directory')
+        lock.truncate(0); lock.write(str(owner) + '\n'); lock.flush()
+    os.set_inheritable(lock.fileno(), True)
 os.environ['LAUNCH_LOCKED'] = sys.argv[2]
 os.execvp('bash', ['bash', sys.argv[1], *sys.argv[3:]])
 PYLAUNCHLOCK
@@ -35,8 +47,17 @@ read -r host port < <(vastai show instance "$id" --raw | python3 -I -c "import j
 echo "$id $host $port" > "$D/host"
 # The box gets the working tree without .git; tie each launch to the commit a code_commit_url can name.
 echo "$(date -u +%FT%TZ) $id $(git -C "$P" rev-parse HEAD 2>/dev/null || echo no-git) changed_files=$(git -C "$P" status --porcelain 2>/dev/null | wc -l | tr -d ' ')" >> "$D/launch-code.log"
-rm -f "$D/STOPPED" "$D/BACKUP_FAILED" "$D/QUIESCED"
+if [ "${VAST_GUARDED_LAUNCH:-}" != 1 ]; then rm -f "$D/STOPPED" "$D/BACKUP_FAILED" "$D/QUIESCED"; fi
 ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=30 -i "$HOME/.ssh/id_ed25519" -p "$port")
+# An SSH acknowledgement can be lost after the box starts. Preserve that writer and its log on retry.
+existing=$(ssh "${ssh_opts[@]}" root@"$host" "
+    if [ -s /workspace/$name.pid ]; then
+        read -r existing_pid < /workspace/$name.pid
+        case \"\$existing_pid\" in ''|*[!0-9]*) exit 1;; esac
+        if kill -0 \"\$existing_pid\" 2>/dev/null || grep -qE '^box (start|done|failed) ' /workspace/$name.log; then echo started; fi
+    fi
+    true" | tail -1)
+if [ "$existing" = started ]; then echo "box already launched: $name; original writer retained"; exit 0; fi
 ssh "${ssh_opts[@]}" root@"$host" "mkdir -p /workspace/v2d-track-2/data/denoise_eval" 2>&1 | grep -v "Welcome\|Have fun" || true
 if [ -f "$D/entry.sh" ]; then
     ssh "${ssh_opts[@]}" root@"$host" "mkdir -p /workspace/v2d-track-2/scripts/tier3_native"
@@ -78,4 +99,5 @@ fi
 for hook in pre post entry; do
     [ ! -f "$D/$hook.sh" ] || rsync -az -e "ssh ${ssh_opts[*]}" "$D/$hook.sh" root@"$host":/workspace/"$name.$hook".sh
 done
-ssh "${ssh_opts[@]}" root@"$host" "setsid nohup bash /workspace/$name.sh > /workspace/$name.log 2>&1 < /dev/null & echo launched" 2>&1 | grep -v "Welcome\|Have fun"
+[ "${VAST_GUARDED_LAUNCH:-}" != 1 ] || [ ! -f "$D/STOPPED" ] || { echo "watchdog stopped this instance before launch" >&2; exit 1; }
+ssh "${ssh_opts[@]}" root@"$host" "setsid nohup bash /workspace/$name.sh > /workspace/$name.log 2>&1 < /dev/null & echo \$! > /workspace/$name.pid; echo launched" 2>&1 | grep -v "Welcome\|Have fun"

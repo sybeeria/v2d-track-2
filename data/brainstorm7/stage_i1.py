@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stage the I1 screen (T2-STRATEGY/REPORT.md) as a launch.sh run directory: OUT/i1screen/{jobs.txt,post.sh}.
 
-Box: bootstrap + external Tier 2 screen (box.sh defaults, as r5), the 12 training jobs, then post.sh runs exactly k=3
+Box: bootstrap + a frozen external Tier 2 screen, the 12 training jobs, then post.sh runs exactly k=3
 evaluate-only repeats of every final checkpoint (prepare_repeats.py). Decide on the Mac with T2-STRATEGY/i1_decide.py.
 usage: .venv/bin/python -B data/brainstorm7/stage_i1.py OUT_DIR
 """
@@ -23,6 +23,21 @@ for line in lines:
     candidates.append({'name': job, 'source': f'{job}/{arm}', 'arm': arm, 'arms_file': arms_file, 'input': label,
                        'sequence': sequence, 'steps': [FINAL], 'final_step': FINAL, 'group': 'i1'})
 (out / 'jobs.txt').write_text('\n'.join(lines) + '\n')
+(out / 'env.sh').write_text('export BUILD_SCREEN=0\n')
+(out / 'pre.sh').write_text("""set -euo pipefail
+archive=runs/i1screen/frozen-screen
+if [ -d "$archive" ]; then
+    rm -rf data/screen/tier2
+    mkdir -p data/screen
+    cp -a "$archive" data/screen/tier2
+else
+    .venv/bin/python -B scripts/make_tier2_screen.py --jobs 6
+    mkdir -p runs/i1screen
+    rm -rf runs/i1screen/.staging
+    cp -a data/screen/tier2 runs/i1screen/.staging
+    mv runs/i1screen/.staging "$archive"
+fi
+""")
 plan = json.dumps({'repeats': K, 'candidates': candidates}, indent=1)
 run = f'runs/{NAME}'
 (out / 'post.sh').write_text(f"""set -euo pipefail
@@ -31,6 +46,6 @@ cat > {run}/repeat_plan.json <<'PLAN'
 {plan}
 PLAN
 .venv/bin/python -B scripts/prepare_repeats.py --plan {run}/repeat_plan.json --source-root {run} --out-root {run}/repeats
-JOBS_FILE={run}/repeats/jobs-i1.txt scripts/test_day.sh "$(nvidia-smi -L | wc -l)" {run}/repeats/i1
+PILOT_EVALUATE_ONLY=1 JOBS_FILE={run}/repeats/jobs-i1.txt scripts/test_day.sh "$(nvidia-smi -L | wc -l)" {run}/repeats/i1
 """)
 print(out, len(candidates), 'jobs,', len(candidates) * K, 'repeat evaluations')

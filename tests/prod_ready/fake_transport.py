@@ -12,8 +12,10 @@ if tool=='fake_provider':
     elif args[:2]==['destroy','instance']:event('destroy')
 elif tool=='fake_remote':
     cmd=remap(args[-1]);event('remote',command=cmd)
-    if 'setsid nohup' in cmd:
-        name=next(workspace.glob('*.jobs')).stem
+    if 'scripts/vast/deadman.sh' in cmd:
+        event('arm_deadman')
+    elif 'setsid nohup' in cmd:
+        script=Path(re.search(r'setsid nohup bash\s+(\S+)',cmd)[1]);name=script.stem
         with (workspace/f'{name}.log').open('w') as log:
             proc=subprocess.Popen(['bash',str(workspace/f'{name}.sh')],cwd=workspace,stdout=log,stderr=log,start_new_session=True)
         (home/'box-process').write_text(str(proc.pid))
@@ -21,8 +23,11 @@ elif tool=='fake_remote':
         with (home/'box-processes').open('a') as f:f.write(f'{proc.pid}\n')
         print('launched')
     elif 'read -r pid' in cmd:
-        event('quiesce')
-        try:os.killpg(int((home/'box-process').read_text()),signal.SIGTERM)
+        pidfile=Path(re.search(r'read -r pid < (\S+)',cmd)[1])
+        if not pidfile.exists():sys.exit(1)
+        pid=int(pidfile.read_text());event('quiesce',pid=pid)
+        if pid<=1:sys.exit(1)
+        try:os.killpg(pid,signal.SIGTERM)
         except ProcessLookupError:pass
     else:
         result=subprocess.run(['bash','-c',cmd],text=True);sys.exit(result.returncode)
@@ -73,7 +78,8 @@ elif tool=='fake_sync':
 elif tool=='fake_pause':
     if args[0]=='600':
         (home/'periodic-pull').touch()
-        while True:time.sleep(.05)
+        while not (home/'continue-cycle').exists():time.sleep(.05)
+        (home/'continue-cycle').unlink()
     else:time.sleep(.1)
 elif tool=='flock':
     import fcntl
