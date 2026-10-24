@@ -71,6 +71,9 @@ class ProductionChain(unittest.TestCase):
             if tier==1:
                 for row in json.loads((out/'selection.json').read_text()):
                     self.assertEqual(row['auc_means'],{'330012672':.875,'349999104':.9375})
+                # The scale gate reads this real qualification; the fixture has 2 of the 3 sentinels, nothing else wrong.
+                gate=subprocess.run([sys.executable,'-B',str(BASE/'scripts/sentinel_gate.py'),'--qualification',str(out)],capture_output=True,text=True)
+                self.assertEqual((gate.returncode,json.loads(gate.stdout)),(1,{'status':'HOLD','reasons':['expected 3 Tier 1 sentinels, found tier 1 with 2']}))
                 first=next((out/'cohort').glob('t1-ep0-r01/*/*/evaluation/seq0/330012672/scores.json'))
                 self.assertEqual(json.loads(first.read_text())['mean']['AUC'],1.)
                 alternate=self.stage_cohort(run,tier,'earlier-wins',k=3)
