@@ -1,0 +1,10 @@
+t2-ep00|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-06-04_14-16-23_tall_bar_stool_tip_up_04|49999872
+t2-ep03|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-04-27_11-50-10_contigo_coffee_mug_handle_table_05|49999872
+t2-ep06|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-06-01_11-26-44_monitor_rotate_05|49999872
+t2-ep09|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-06-04_16-45-04_big_red_bowl_under_skinny_wood_chair_03|49999872
+t2-ep12|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-04-25_17-20-04_black_platform_turn_05|49999872
+t2-ep15|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-05-06_11-06-15_wet_floor_sign_pick_place_ground_08|49999872
+t2-ep18|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-05-06_10-00-19_blue_trash_can_drag_sideways_08|49999872
+t2-ep21|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-04-29_11-53-57_tall_bar_stool_pull_08|49999872
+t2-ep24|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-05-29_15-43-20_watering_can_pour_right_02|49999872
+t2-ep27|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-05-01_11-15-05_woven_basket_ground_desk_10|49999872

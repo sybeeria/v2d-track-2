@@ -1,0 +1,15 @@
+t2-ep00|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-06-04_14-16-23_tall_bar_stool_tip_up_04|49999872
+t2-ep02|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-06-02_10-04-42_blue_easter_basket_place_10|49999872
+t2-ep04|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-04-24_11-40-52_baseball_bat_rotate_05|49999872
+t2-ep06|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-06-01_11-26-44_monitor_rotate_05|49999872
+t2-ep08|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-06-05_15-08-08_skinny_wood_chair_push_10|49999872
+t2-ep10|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-05-01_11-36-40_white_desk_lower_to_ground_10|49999872
+t2-ep12|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-04-25_17-20-04_black_platform_turn_05|49999872
+t2-ep14|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-05-28_14-44-09_round_table_flip_08|49999872
+t2-ep16|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-03-12_15-06-36_spray_bottle_left_desk_ground_02|49999872
+t2-ep18|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-05-06_10-00-19_blue_trash_can_drag_sideways_08|49999872
+t2-ep20|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-06-08_16-57-34_rice_cooker_clockwise_04|49999872
+t2-ep22|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-05-22_16-52-36_step_ladder_drag_03|49999872
+t2-ep24|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-05-29_15-43-20_watering_can_pour_right_02|49999872
+t2-ep26|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-06-05_16-05-08_skateboard_rotate_ground_10|49999872
+t2-ep28|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-05-19_11-27-07_squeegee_sweep_away_from_you_03_|49999872

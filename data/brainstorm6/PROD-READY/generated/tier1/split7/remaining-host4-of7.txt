@@ -1,0 +1,4 @@
+t1-ep04|../data/brainstorm6/PROD-READY/generated/arms/F6-rebalance-tail.txt|F6-rebalance-tail|clean|2026-04-24_11-40-52_baseball_bat_rotate_05|330012672 349999104
+t1-ep12|../data/brainstorm6/PROD-READY/generated/arms/F6-rebalance-tail.txt|F6-rebalance-tail|clean|2026-04-25_17-20-04_black_platform_turn_05|330012672 349999104
+t1-ep20|../data/brainstorm6/PROD-READY/generated/arms/F6-rebalance-tail.txt|F6-rebalance-tail|clean|2026-06-08_16-57-34_rice_cooker_clockwise_04|330012672 349999104
+t1-ep27|../data/brainstorm6/PROD-READY/generated/arms/F6-rebalance-tail.txt|F6-rebalance-tail|clean|2026-05-01_11-15-05_woven_basket_ground_desk_10|330012672 349999104

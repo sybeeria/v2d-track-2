@@ -119,9 +119,24 @@ class ProductionChain(unittest.TestCase):
                 self.tool(['qualify','--out',str(five)],ok=False);self.assertFalse((five/'selected.json').exists());missing.write_bytes(retained)
                 self.tool(['qualify','--out',str(five)])
                 veto=self.stage_cohort(run,tier,'veto',k=3);self.tool(['run','--out',str(veto)],env={'GPU_BAD_REPEAT':'02'})
-                self.tool(['qualify','--out',str(veto)],ok=False)
-                self.assertFalse((veto/'selected.json').exists());self.assertEqual(len(list(veto.rglob('trajectory.parquet'))),6)
-                print('GATES k=5 exact count; missing member fails; one bad of k=3 vetoes; retained all outputs; zero training')
+                self.tool(['qualify','--out',str(veto)])
+                # A veto keeps coverage: same final map, failure status recorded, catastrophes first in the reseed queue.
+                self.assertEqual(json.loads((veto/'selected.json').read_text()),selected)
+                report=json.loads((veto/'veto.json').read_text())
+                self.assertEqual([(v['episode'],v['status']) for v in report['candidates']],[(0,'catastrophe'),(1,'catastrophe')])
+                self.assertEqual([m['catastrophe'] for m in report['candidates'][0]['members']],[False,True,False])
+                self.assertEqual(report['reseed_order'],[0,1])
+                self.assertEqual({v['status'] for v in json.loads((out/'veto.json').read_text())['candidates']},{'pass'})
+                self.assertEqual(len(list(veto.rglob('trajectory.parquet'))),6)
+                tier_root=str(self.f.remote/'data/challenge/track_2/tier_2_synthetic_noise')
+                # A passing re-evaluation of the vetoed checkpoint is not a rescue; only a newly trained seed is.
+                self.tool(['merge','--cohort',str(veto),'--rescue',str(out),'--tier-root',tier_root,'--out',str(run/'reeval-rescue')],ok=False)
+                retained=run/'vetoed-release'
+                self.tool(['merge','--cohort',str(veto),'--tier-root',tier_root,'--out',str(retained)])
+                self.assertEqual(json.loads((retained/'selected.json').read_text()),selected)
+                self.assertEqual(json.loads((retained/'veto.json').read_text())['episodes'],
+                                 {e:{'original':'catastrophe','final':'catastrophe'} for e in ['0','1']})
+                print('GATES k=5 exact count; missing member fails; one bad of k=3 vetoes but keeps coverage; re-evaluation cannot rescue; zero training')
 
 class RepeatInterface(unittest.TestCase):
     def test_hard_tier_refuses_tier1_before_open(self):

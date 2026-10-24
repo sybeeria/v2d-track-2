@@ -33,6 +33,8 @@ if [ -d "$D/payload/runs/$name/input-assets" ]; then
 fi
 read -r host port < <(vastai show instance "$id" --raw | python3 -I -c "import json,sys; o=json.load(sys.stdin); print(o['public_ipaddr'].strip(), o['ports']['22/tcp'][0]['HostPort'])")
 echo "$id $host $port" > "$D/host"
+# The box gets the working tree without .git; tie each launch to the commit a code_commit_url can name.
+echo "$(date -u +%FT%TZ) $id $(git -C "$P" rev-parse HEAD 2>/dev/null || echo no-git) changed_files=$(git -C "$P" status --porcelain 2>/dev/null | wc -l | tr -d ' ')" >> "$D/launch-code.log"
 rm -f "$D/STOPPED" "$D/BACKUP_FAILED" "$D/QUIESCED"
 ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=30 -i "$HOME/.ssh/id_ed25519" -p "$port")
 ssh "${ssh_opts[@]}" root@"$host" "mkdir -p /workspace/v2d-track-2/data/denoise_eval" 2>&1 | grep -v "Welcome\|Have fun" || true

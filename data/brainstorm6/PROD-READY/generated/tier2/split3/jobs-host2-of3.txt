@@ -1,0 +1,10 @@
+t2-ep02|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-06-02_10-04-42_blue_easter_basket_place_10|49999872
+t2-ep05|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-03-18_19-36-56_g1_box_rotate_01|49999872
+t2-ep08|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-06-05_15-08-08_skinny_wood_chair_push_10|49999872
+t2-ep11|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-04-24_13-56-58_light_blue_book_pick_place_09|49999872
+t2-ep14|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-05-28_14-44-09_round_table_flip_08|49999872
+t2-ep17|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-05-01_17-04-55_traffic_cone_ground_table_02|49999872
+t2-ep20|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-06-08_16-57-34_rice_cooker_clockwise_04|49999872
+t2-ep23|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-06-03_15-08-03_toy_stroller_back_forth_ground_04|49999872
+t2-ep26|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-06-05_16-05-08_skateboard_rotate_ground_10|49999872
+t2-ep29|../data/brainstorm6/PROD-READY/generated/arms/T2C-contact.txt|T2C-contact|raw_repaired|2026-06-05_18-27-40_rolling_luggage_left_foot_push_06|49999872

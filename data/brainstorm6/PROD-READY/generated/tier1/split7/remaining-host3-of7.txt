@@ -1,0 +1,4 @@
+t1-ep03|../data/brainstorm6/PROD-READY/generated/arms/F6-rebalance-tail.txt|F6-rebalance-tail|clean|2026-04-27_11-50-10_contigo_coffee_mug_handle_table_05|330012672 349999104
+t1-ep10|../data/brainstorm6/PROD-READY/generated/arms/F6-rebalance-tail.txt|F6-rebalance-tail|clean|2026-05-01_11-36-40_white_desk_lower_to_ground_10|330012672 349999104
+t1-ep18|../data/brainstorm6/PROD-READY/generated/arms/F6-rebalance-tail.txt|F6-rebalance-tail|clean|2026-05-06_10-00-19_blue_trash_can_drag_sideways_08|330012672 349999104
+t1-ep26|../data/brainstorm6/PROD-READY/generated/arms/F6-rebalance-tail.txt|F6-rebalance-tail|clean|2026-06-05_16-05-08_skateboard_rotate_ground_10|330012672 349999104

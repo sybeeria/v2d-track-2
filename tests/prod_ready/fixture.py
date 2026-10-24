@@ -109,10 +109,11 @@ class Fixture:
         text=log.read_text() if log.exists() else 'no log'
         if 'box done ' not in text:raise AssertionError(text)
     def stop_box(self):
-        p=self.home/'box-process'
+        p=self.home/'box-processes'
         if p.exists():
             import signal
-            try:
-                group=int(p.read_text());os.killpg(group,signal.SIGTERM);time.sleep(.15);os.killpg(group,signal.SIGKILL)
-            except ProcessLookupError:pass
+            for group in map(int,p.read_text().split()):
+                try:
+                    os.killpg(group,signal.SIGTERM);time.sleep(.15);os.killpg(group,signal.SIGKILL)
+                except ProcessLookupError:pass
     def calls(self):return list(map(json.loads,self.events.read_text().splitlines()))

@@ -16,7 +16,10 @@ elif tool=='fake_remote':
         name=next(workspace.glob('*.jobs')).stem
         with (workspace/f'{name}.log').open('w') as log:
             proc=subprocess.Popen(['bash',str(workspace/f'{name}.sh')],cwd=workspace,stdout=log,stderr=log,start_new_session=True)
-        (home/'box-process').write_text(str(proc.pid));print('launched')
+        (home/'box-process').write_text(str(proc.pid))
+        # A replacement box overwrites box-process; keep every group so stop_box also reaps replaced boxes.
+        with (home/'box-processes').open('a') as f:f.write(f'{proc.pid}\n')
+        print('launched')
     elif 'read -r pid' in cmd:
         event('quiesce')
         try:os.killpg(int((home/'box-process').read_text()),signal.SIGTERM)

@@ -1,0 +1,4 @@
+t1-ep00|../data/brainstorm6/PROD-READY/generated/arms/F6-rebalance-tail.txt|F6-rebalance-tail|clean|2026-06-04_14-16-23_tall_bar_stool_tip_up_04|330012672 349999104
+t1-ep07|../data/brainstorm6/PROD-READY/generated/arms/F6-rebalance-tail.txt|F6-rebalance-tail|clean|2026-05-29_15-20-43_iron_round_table_02|330012672 349999104
+t1-ep15|../data/brainstorm6/PROD-READY/generated/arms/F6-rebalance-tail.txt|F6-rebalance-tail|clean|2026-05-06_11-06-15_wet_floor_sign_pick_place_ground_08|330012672 349999104
+t1-ep23|../data/brainstorm6/PROD-READY/generated/arms/F6-rebalance-tail.txt|F6-rebalance-tail|clean|2026-06-03_15-08-03_toy_stroller_back_forth_ground_04|330012672 349999104

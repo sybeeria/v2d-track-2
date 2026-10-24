@@ -1,0 +1,4 @@
+t1-ep01|../data/brainstorm6/PROD-READY/generated/arms/F6-rebalance-tail.txt|F6-rebalance-tail|clean|2026-05-18_17-06-21_vacuum_left_lean_02|330012672 349999104
+t1-ep08|../data/brainstorm6/PROD-READY/generated/arms/F6-rebalance-tail.txt|F6-rebalance-tail|clean|2026-06-05_15-08-08_skinny_wood_chair_push_10|330012672 349999104
+t1-ep16|../data/brainstorm6/PROD-READY/generated/arms/F6-rebalance-tail.txt|F6-rebalance-tail|clean|2026-03-12_15-06-36_spray_bottle_left_desk_ground_02|330012672 349999104
+t1-ep24|../data/brainstorm6/PROD-READY/generated/arms/F6-rebalance-tail.txt|F6-rebalance-tail|clean|2026-05-29_15-43-20_watering_can_pour_right_02|330012672 349999104
