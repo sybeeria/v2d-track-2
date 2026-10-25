@@ -71,6 +71,10 @@ python3 -I -c "import sys,math; c,f=map(float,sys.argv[1:]); assert all(math.isf
 # The box-side backstop (scripts/vast/deadman.sh) stops the instance 30 min past the cap if this watchdog cannot.
 deadline=$(python3 -I -c "import sys; s,c,r=map(float,sys.argv[1:]); print(int(s + c / r * 3600 + 1800))" "$start" "$cap" "$rate")
 mkdir -p "$D/pulled"
+# The first pre-upload pull can precede installation of deadman.sh. The launcher needs this budget to arm it.
+grace=$(( 10 * ${WATCHDOG_COMMAND_TIMEOUT_SECONDS:-120} + 1200 )); [ "$grace" -ge 5400 ] || grace=5400
+[ ! -e "$D/KEEP" ] || grace=0
+printf '%s %s\n' "$deadline" "$grace" > "$D/deadman-arm-$id"
 log() { echo "$(date -u +%FT%TZ) $*" >> "$D/watchdog.log"; }
 
 # Re-armed at the start of every pull, including the final ones, so the deadman sees a live watchdog throughout a

@@ -2,3 +2,18 @@
 external/
 data/
 __pycache__/
+
+# Publication guardrails; explicit reviewed data sources remain force-added.
+.venv*/
+.pytest_cache/
+.cache/
+.DS_Store
+runs/
+.env
+.env.*
+kaggle*.json
+*.pem
+*.safetensors
+*.ckpt
+*.pth
+*.pt

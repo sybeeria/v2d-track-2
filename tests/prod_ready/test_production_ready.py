@@ -111,8 +111,9 @@ class ProductionChain(unittest.TestCase):
                 self.assertEqual(set(rows.checkpoint_sha256),{sha(Path(policy))})
             kit=self.f.remote/'external/kit/v2d_submission_kit';manifest=json.loads((kit/'KIT_MANIFEST.json').read_text())['files']
             for path in ['tools/pack_submission.py','submit/v2d_submit.py']:self.assertEqual(sha(kit/path),manifest[path])
-            self.assertEqual(set(frame.packer_script_sha256),{sha(kit/'tools/pack_submission.py' if tier==1 else self.f.remote/'scripts/pack_no_clean.py')})
-            self.tool(['export','--out',str(merged),'--work',str(self.f.remote/f'data/fixture/tier{tier}'),'--commit','unused'],ok=False)
+            self.assertEqual(set(frame.packer_script_sha256),{sha(self.f.remote/'scripts/pack_no_clean.py')})
+            again=self.tool(['export','--out',str(merged),'--work',str(self.f.remote/f'data/fixture/tier{tier}'),'--commit','https://github.com/fixture/fixture/commit/0123456789abcdef'],ok=False)
+            self.assertIn('export already attempted',again.stderr)
             print(f'CHAIN tier{tier}: exact default k=3 -> frozen map -> one fresh export -> real packer -> offline validator; 20 fixture rows')
             if tier==2:
                 # Fixed k=5 is supported; one missing result blocks qualification without new evaluations.

@@ -63,7 +63,10 @@ class Fixture:
         for directory in ['tier_1_multiview_caption','tier_2_synthetic_noise','baseline']:
             base=payload/'data/challenge/track_2'/directory
             put(base/'meta/info.json',json.dumps({'total_episodes':2,'chunks_size':1000,'data_path':'data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet'}))
-            records=[{'episode_index':e,'sequence_id':f'seq{e}','frames':10,'length':10} for e in range(2)]
+            canonical=base/'mesh/object/object_visual.glb';canonical.parent.mkdir(parents=True,exist_ok=True)
+            trimesh.creation.box().export(canonical)
+            records=[{'episode_index':e,'sequence_id':f'seq{e}','frames':10,'length':10,
+                      'mesh':'mesh/object/object_visual.glb'} for e in range(2)]
             text=''.join(json.dumps(r)+'\n' for r in records)
             put(base/'meta/episodes_metadata.jsonl',text);put(base/'meta/episodes.jsonl',text)
             for e in range(2):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pack Track 2 Tier 2/3 rollouts using only the public row sample and frozen input NPZs.
+"""Pack Track 2 rollouts using only the public row sample and frozen input NPZs.
 
 No kit packer, dataset reader, clean reference, metric computation, or network access.
 The frame conversion extends SOL-T2's research prototype, using the kit's pose math.
@@ -52,8 +52,8 @@ def convert_frame(achieved, evaluator, target):
 
 
 def pack(results, references, out, track, commit):
-    if track not in {'track_2_tier2', 'track_2_tier3'}:
-        raise ValueError('only Track 2 Tier 2/3 use this builder')
+    if track not in {'track_2_tier1', 'track_2_tier2', 'track_2_tier3'}:
+        raise ValueError('only Track 2 uses this builder')
     if not re.fullmatch(rs.CODE_COMMIT_PATTERN, commit):
         raise ValueError('a pinned GitHub commit URL is required')
     sample = pd.read_csv(KIT / 'data/track_2_sample_submission.csv', dtype=str)
@@ -138,7 +138,7 @@ def pack(results, references, out, track, commit):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--track', choices=['track_2_tier2','track_2_tier3'], required=True)
+    parser.add_argument('--track', choices=['track_2_tier1','track_2_tier2','track_2_tier3'], required=True)
     parser.add_argument('--results', type=Path, required=True)
     parser.add_argument('--frame-references', type=Path, required=True)
     parser.add_argument('--code-commit', required=True)

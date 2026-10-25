@@ -228,8 +228,9 @@ class KitIntegrityTests(unittest.TestCase):
 
     def test_each_tier_must_name_the_packer_that_wrote_it(self):
         official=self.manifest['tools/pack_submission.py']
-        for track,packer,ok in [('track_2_tier1',official,True),('track_2_tier2',self.own,True),('track_2_tier3',self.own,True),
-                                ('track_2_tier1',self.own,False),('track_2_tier2',official,False)]:
+        for track,packer,ok in [('track_2_tier1',official,True),('track_2_tier1',self.own,True),('track_2_tier2',self.own,True),
+                                ('track_2_tier3',self.own,True),('track_2_tier1','0'*64,False),('track_2_tier2',official,False),
+                                ('track_2_tier3',official,False)]:
             with self.subTest(track=track,packer=packer):
                 result=self.validate(track,packer)
                 self.assertEqual(result.returncode==0,ok,result.stderr)

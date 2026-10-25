@@ -7,7 +7,7 @@ Tier 2/3 own-input vetoes do not block coverage: a vetoed episode keeps its fina
 (veto.json); merge --rescue moves it to a newly trained checkpoint only if that one's veto class is strictly
 better (pass < orientation-only < catastrophe), earliest --rescue first.
 """
-import argparse, hashlib, json, math, os, shutil, subprocess, sys
+import argparse, hashlib, json, math, os, re, shutil, subprocess, sys
 from pathlib import Path
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -77,7 +77,12 @@ def stage(args):
         metadata=list(map(json.loads,(args.tier_root/'meta/episodes_metadata.jsonl').read_text().splitlines()))
         lookup={r['sequence_id']:r['episode_index'] for r in metadata}
         if len(lookup)!=len(metadata):raise ValueError('duplicate episode metadata')
-        for c in candidates:c['episode']=lookup[c['sequence']]
+        for c in candidates:
+            c['episode']=lookup[c['sequence']]
+            if args.tier==1:
+                row=next(r for r in metadata if r['episode_index']==c['episode'])
+                mesh=(args.tier_root/row['mesh']).resolve()
+                c['scoring_mesh']={'path':str(mesh),'sha256':digest(mesh)}
     plan={'repeats':args.k,'tier':args.tier,'candidates':candidates,'manifest':str(args.manifest.resolve()),
           'manifest_sha256':digest(args.manifest),'source_root':str(args.source.resolve()),'ep18':args.ep18,
           'selection':TIER1_RULE if args.tier==1 else 'all k pass; final only',
@@ -101,6 +106,8 @@ def stage(args):
 def checked_plan(root):
     plan=json.loads((root/'plan.json').read_text())
     if digest(plan['manifest'])!=plan['manifest_sha256']:raise ValueError('frozen manifest changed')
+    if any(digest(path)!=h for path,h in plan.get('input_manifests',{}).items()):
+        raise ValueError('frozen parent manifest changed')
     return plan
 
 def sequence_inputs(entry):
@@ -148,7 +155,9 @@ def qualify(args):
                     or metrics.get('reset_mode')!='explicit' or metrics.get('environment_steps')!=step
                     or metrics.get('non_finite_worlds')!=[]):raise ValueError('invalid evaluator protocol')
                 # Re-read the retained achieved trajectory; never trust an editable summary alone.
-                report=score_rollout(trajectory,Path(job['scoring']['path']))
+                report=score_rollout(trajectory,Path(job['scoring']['path']),
+                                     Path(checked_record(c['scoring_mesh'])['path']) if plan['tier']==1 else None,
+                                     episode_index=c['episode'] if plan['tier']==1 else None)
                 if not all(math.isfinite(v) for v in report['metrics'].values()):raise ValueError('non-finite score')
                 mean=report['metrics']
                 if plan['tier']!=1:
@@ -264,13 +273,14 @@ def merge(args):
     metadata=list(map(json.loads,(args.tier_root/'meta/episodes_metadata.jsonl').read_text().splitlines()))
     total=json.loads((args.tier_root/'meta/info.json').read_text())['total_episodes']
     if sorted(r['episode_index'] for r in metadata)!=list(range(total)):raise ValueError('invalid release roster')
-    mapping={};parents=[];common=None;status={};combined=None;combined_sequences={};candidates=[]
+    mapping={};parents=[];common=None;status={};combined=None;combined_sequences={};candidates=[];manifests={}
     def input_identity(plan):
         manifest=json.loads(Path(plan['manifest']).read_text())
         coverage=manifest.get('tier3_coverage') if plan['tier']==3 else None
         return coverage if coverage is not None else plan['manifest_sha256']
     for cohort in args.cohort:
         plan=checked_plan(cohort)
+        manifests.update(plan.get('input_manifests',{}));manifests[plan['manifest']]=plan['manifest_sha256']
         key=(plan['tier'],input_identity(plan),plan['evaluator'],plan['repeats'])
         if common is not None and common!=key:raise ValueError('release cohort protocol/input/runtime differs')
         common=key
@@ -293,6 +303,7 @@ def merge(args):
     evaluated={episode:{v['checkpoint_sha256']} for episode,v in status.items()}
     for cohort in args.rescue or []:  # earliest seed first; a later one replaces only a strictly worse class
         rescue=checked_plan(cohort)
+        manifests.update(rescue.get('input_manifests',{}));manifests[rescue['manifest']]=rescue['manifest_sha256']
         if (rescue['tier'],input_identity(rescue),rescue['evaluator'],rescue['repeats'])!=common or common[0]==1:
             raise ValueError('rescue cohort protocol/input/runtime differs, or Tier 1')
         if combined is not None and any(entry['sequence'] not in combined_sequences or
@@ -319,15 +330,19 @@ def merge(args):
         target=args.out/'manifest.json'
         write(target,{**combined,'sequences':[combined_sequences[s] for s in sorted(combined_sequences)]})
         plan={**plan,'manifest':str(target.resolve()),'manifest_sha256':digest(target),'candidates':candidates}
-    write(args.out/'plan.json',{**plan,'source_root':str(ROOT/'runs'),'parents':parents})
+    write(args.out/'plan.json',{**plan,'source_root':str(ROOT/'runs'),'parents':parents,'input_manifests':manifests})
 
 
 def export(args):
+    from pack_no_clean import rs
+    if not re.fullmatch(rs.CODE_COMMIT_PATTERN,args.commit):
+        raise ValueError('a pinned GitHub commit URL is required before export')
     plan=checked_plan(args.out)
     if plan['ep18']:raise ValueError('ep18 pilot has no submission export')
-    for entry in json.loads(Path(plan['manifest']).read_text())['sequences']:
-        read_inputs(Path(plan['manifest']),[entry['sequence']],list(entry['arms']))
-        for asset in entry.get('assets',[]):checked_record(asset)
+    for path in {plan['manifest'],*plan.get('input_manifests',{})}:
+        for entry in json.loads(Path(path).read_text())['sequences']:
+            read_inputs(Path(path),[entry['sequence']],list(entry['arms']))
+            for asset in entry.get('assets',[]):checked_record(asset)
     binding=json.loads((args.out/'export-binding.json').read_text())
     if evaluator_identity(Path(os.environ.get('FLASH_ROOT',ROOT/'external/video_to_data/robotic_grounding/flash_chord')))!=plan['evaluator']:
         raise ValueError('evaluator/runtime changed after cohort')

@@ -1,0 +1,13 @@
+# job | arms file | arm | input | sequence | steps  (I1 screen; external upstream motions only; final 50M only)
+I1-T2C-E4-s44-snack|pilot_arms_i1.txt|T2C-E4-seed44|raw_repaired|2026-03-06_10-24-18_snack_box_pick_and_place_01|49999872
+I1-T2C-E4-s44-trash|pilot_arms_i1.txt|T2C-E4-seed44|raw_repaired|2026-02-20_17-37-45_blue_trash_can_drag_007|49999872
+I1-T2C-E4-s44-corn|pilot_arms_i1.txt|T2C-E4-seed44|raw_repaired|2026-03-23_18-10-01_corn_can_right_left_handover_01|49999872
+I1-T2C-contact-s44-snack|pilot_arms_i1.txt|T2C-contact-seed44|raw_repaired|2026-03-06_10-24-18_snack_box_pick_and_place_01|49999872
+I1-T2C-contact-s44-trash|pilot_arms_i1.txt|T2C-contact-seed44|raw_repaired|2026-02-20_17-37-45_blue_trash_can_drag_007|49999872
+I1-T2C-contact-s44-corn|pilot_arms_i1.txt|T2C-contact-seed44|raw_repaired|2026-03-23_18-10-01_corn_can_right_left_handover_01|49999872
+I1-T2C-E4-s45-snack|pilot_arms_i1.txt|T2C-E4-seed45|raw_repaired|2026-03-06_10-24-18_snack_box_pick_and_place_01|49999872
+I1-T2C-E4-s45-trash|pilot_arms_i1.txt|T2C-E4-seed45|raw_repaired|2026-02-20_17-37-45_blue_trash_can_drag_007|49999872
+I1-T2C-E4-s45-corn|pilot_arms_i1.txt|T2C-E4-seed45|raw_repaired|2026-03-23_18-10-01_corn_can_right_left_handover_01|49999872
+I1-T2C-contact-s45-snack|pilot_arms_i1.txt|T2C-contact-seed45|raw_repaired|2026-03-06_10-24-18_snack_box_pick_and_place_01|49999872
+I1-T2C-contact-s45-trash|pilot_arms_i1.txt|T2C-contact-seed45|raw_repaired|2026-02-20_17-37-45_blue_trash_can_drag_007|49999872
+I1-T2C-contact-s45-corn|pilot_arms_i1.txt|T2C-contact-seed45|raw_repaired|2026-03-23_18-10-01_corn_can_right_left_handover_01|49999872

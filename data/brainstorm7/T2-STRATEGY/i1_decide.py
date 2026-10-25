@@ -10,6 +10,8 @@ GO iff MP(R) >= MP(C)+2, SP(R) >= SP(C), no clean catastrophe (>15 cm) under R, 
 usage: .venv/bin/python -I -B data/brainstorm7/T2-STRATEGY/i1_decide.py --root DIR... --pair A=B...
 """
 import argparse
+import hashlib
+import re
 import json
 import os
 import sys
@@ -27,6 +29,7 @@ def fence(event, args):
 
 sys.addaudithook(fence)
 import numpy as np
+import pyarrow.parquet as pq
 
 sys.path.insert(0, str(ROOT / 'scripts'))
 from score_rollout import load_reference, load_rollout, score_rollout
@@ -37,11 +40,44 @@ FINAL = 49999872
 def members(roots, arm, seq):
     found = set()
     for root in roots:
-        found |= {p.resolve() for p in (root/'repeats/i1').glob(f'*-r*/{arm}/raw_repaired/evaluation/{seq}/{FINAL}/trajectory.parquet')}
+        for p in (root/'repeats/i1').glob(f'*-r*/{arm}/raw_repaired/evaluation/{seq}/{FINAL}/trajectory.parquet'):
+            if p.resolve()!=root.resolve()/p.relative_to(root) or p.stat().st_nlink!=1:
+                raise SystemExit('separate regular I1 repeat artifacts required')
+            found.add(p.resolve())
     repeats=sorted(p.parents[5].name.rsplit('-r',1)[-1] for p in found)
     if repeats != ['01','02','03']:
         raise SystemExit(f'incomplete or extra fresh cohort for {arm} {seq}: expected r01,r02,r03, found {repeats}')
+    identities=set()
+    for path in found:
+        metadata=pq.ParquetFile(path).schema_arrow.metadata or {}
+        values=tuple(metadata.get(('flash_chord.'+key).encode(),b'').decode() for key in
+                     ('checkpoint_sha256','eval_script_sha256','eval_code_sha256'))
+        if any(not re.fullmatch('[0-9a-fA-F]{64}',v) for v in values):
+            raise SystemExit('missing I1 checkpoint/evaluator provenance')
+        identities.add(values)
+    if len(identities)!=1:
+        raise SystemExit('mixed I1 checkpoint/evaluator provenance')
     return sorted(found)
+
+
+def frozen_reference(archive,record):
+    parts=Path(record['path']).parts
+    anchor=next((i for i in range(len(parts)-2) if parts[i:i+3]==('data','screen','tier2')),None)
+    if anchor is None:
+        raise SystemExit('I1 reference is outside the frozen external screen')
+    path=archive.joinpath(*parts[anchor+3:])
+    if archive.resolve() not in path.resolve().parents or hashlib.sha256(path.read_bytes()).hexdigest()!=record['sha256']:
+        raise SystemExit(f'{path}: frozen I1 reference SHA-256 mismatch')
+    return path
+
+
+def trained_on_screen(path, seq, arm):
+    recorded = json.loads((path.parents[4]/'recipe.json').read_text())['references'][f'raw_repaired/{seq}']
+    expected = {'training': arm['training_reference'], 'scoring': arm['clean_scoring_reference'], 'support': arm['support']}
+    if (any(recorded[k]['sha256'] != v['sha256'] for k, v in expected.items())
+            or recorded['support']['enabled'] != arm['support']['enabled']):
+        raise SystemExit(f'{path}: I1 member was trained on inputs other than the frozen screen')
+    return path
 
 
 def assess(path, own_ref, clean_ref):
@@ -75,15 +111,27 @@ def main():
     p.add_argument('--pair', action='append', required=True, help='PRIMARY_ARM=CONTROL_ARM')
     p.add_argument('--out', type=Path)
     a = p.parse_args()
-    manifest = json.loads((ROOT / 'data/screen/tier2/manifest.json').read_text())
+    archives=[root/'frozen-screen' for root in a.root]
+    if any(not (p/'manifest.json').is_file() for p in archives):
+        raise SystemExit('missing frozen I1 screen; wait for a complete pull')
+    manifests=[(p/'manifest.json').read_bytes() for p in archives]
+    if len(set(manifests))!=1:
+        raise SystemExit('different frozen I1 screens cannot share one decision')
+    manifest = json.loads(manifests[0])
+    archive=archives[0]
     result = []
     for pair in a.pair:
         primary, control = pair.split('=')
         for s in manifest['sequences']:
             arm = s['arms']['raw_repaired']
-            own, clean = ROOT / arm['training_reference']['path'], ROOT / arm['clean_scoring_reference']['path']
-            p_rows = [assess(x, own, clean) for x in members(a.root, primary, s['sequence'])]
-            c_rows = [assess(x, own, clean) for x in members(a.root, control, s['sequence'])]
+            own=frozen_reference(archive,arm['training_reference'])
+            clean=frozen_reference(archive,arm['clean_scoring_reference'])
+            for label in ('raw_repaired','clean'):
+                for key in ('mesh','support'):
+                    if key in s['arms'].get(label,{}):
+                        frozen_reference(archive,s['arms'][label][key])
+            p_rows = [assess(trained_on_screen(x, s['sequence'], arm), own, clean) for x in members(a.root, primary, s['sequence'])]
+            c_rows = [assess(trained_on_screen(x, s['sequence'], arm), own, clean) for x in members(a.root, control, s['sequence'])]
             use_primary = not veto_class(c_rows) < veto_class(p_rows)
             chosen = summary(p_rows if use_primary else c_rows)
             result.append({'pair': pair, 'sequence': s['sequence'], 'rule_uses': primary if use_primary else control,

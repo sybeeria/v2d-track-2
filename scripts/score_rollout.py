@@ -138,13 +138,31 @@ def load_rollout(path: Path, frames: int, body_name: str):
     return poses
 
 
-def score_rollout(rollout: Path, reference: Path, mesh: Path | None = None):
+@cache
+def public_frame_indices(episode_index):
+    sample = pd.read_csv(KIT / 'data/track_2_sample_submission.csv', usecols=['row_id'], dtype=str)
+    prefix = f'track_2/e{episode_index:06d}/w000/'
+    ids = sample.loc[sample.row_id.str.startswith(prefix), 'row_id']
+    if ids.empty:
+        raise ValueError(f'episode {episode_index}: absent from public sample')
+    return ids.str.extract(r'/f(\d{6})/o0$', expand=False).astype(int).to_numpy()
+
+
+def score_rollout(rollout: Path, reference: Path, mesh: Path | None = None, *, episode_index=None):
     clean, vertices, mesh, body_name = load_reference(reference, mesh)
     achieved = load_rollout(rollout, len(clean), body_name)
+    if episode_index is not None:
+        vertices = vertices.astype(np.float32).astype(np.float64)
+    # Validate the full rollout first; only the Tier 1 board comparison uses the public score grid.
+    mask = (np.ones(len(clean), dtype=bool) if episode_index is None else
+            np.isin(np.arange(len(clean)), public_frame_indices(episode_index)))
+    if not mask.any():
+        raise ValueError('no public scored frames overlap this reference')
     return {'rollout': str(rollout.resolve()), 'reference': str(reference.resolve()),
             'rollout_sha256': hashlib.sha256(rollout.read_bytes()).hexdigest(),
             'reference_sha256': hashlib.sha256(reference.read_bytes()).hexdigest(),
-            'mesh': str(mesh), 'frames': len(clean), 'metrics': score(clean, achieved, vertices)}
+            'mesh': str(mesh), 'frames': len(clean), 'scored_frames': int(mask.sum()),
+            'public_sample_episode': episode_index, 'metrics': score(clean[mask], achieved[mask], vertices)}
 
 
 def write_json(path: Path, value):

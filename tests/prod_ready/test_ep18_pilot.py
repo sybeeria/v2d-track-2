@@ -53,7 +53,7 @@ class Ep18Pilot(unittest.TestCase):
             'broad_tier3_policy_spend':False,'qualification_sha256':sha(qualification)})
         self.assert_pair(source, True)
         no_export=self.f.command([sys.executable,'-B',str(self.f.remote/'scripts/production_repeats.py'),
-            'export','--out',str(source/'qualification'),'--work',str(source),'--commit','unused'])
+            'export','--out',str(source/'qualification'),'--work',str(source),'--commit','https://github.com/fixture/fixture/commit/0123456789abcdef'])
         self.assertEqual(no_export.returncode,1)
         self.assertIn('ep18 pilot has no submission export',no_export.stderr)
         # A retained, incomplete copy must fail mechanically, without another GPU process.

@@ -28,6 +28,8 @@ with urllib.request.urlopen(request, timeout=30) as response:
 sys.exit(0 if body.get('success', True) else 1)
 PYSTOP
 }
+trap 'rm -f "$ws/$name.deadman.ready"' EXIT
+echo "$id $$" > "$ws/$name.deadman.ready.tmp" && mv "$ws/$name.deadman.ready.tmp" "$ws/$name.deadman.ready"
 log "armed for instance $id"
 while true; do
     now=$(date +%s) reason=

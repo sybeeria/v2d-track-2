@@ -8,15 +8,15 @@ test_missing_duplicate_and_invalid_frames_fail (test_score_rollout.ScoreRolloutT
 test_reference_is_required_and_schema_units_are_checked (test_score_rollout.ScoreRolloutTest.test_reference_is_required_and_schema_units_are_checked) ... ok
 test_three_upstream_references_through_cli (test_score_rollout.ScoreRolloutTest.test_three_upstream_references_through_cli) ... ok
 test_twenty_cm_translation (test_score_rollout.ScoreRolloutTest.test_twenty_cm_translation) ... ok
-/Users/siberia/.t3/projects/v2d-track-2/.venv/lib/python3.11/site-packages/soma/geometry/skeleton_transfer.py:248: UserWarning: Sparse invariant checks are implicitly disabled. Memory errors (e.g. SEGFAULT) will occur when operating on a sparse tensor which violates the invariants, but checks incur performance overhead. To silence this warning, explicitly opt in or out. See `torch.sparse.check_sparse_tensor_invariants.__doc__` for guidance.  (Triggered internally at /Users/runner/work/pytorch/pytorch/aten/src/ATen/Context.cpp:855.)
+$PROJECT/.venv/lib/python3.11/site-packages/soma/geometry/skeleton_transfer.py:248: UserWarning: Sparse invariant checks are implicitly disabled. Memory errors (e.g. SEGFAULT) will occur when operating on a sparse tensor which violates the invariants, but checks incur performance overhead. To silence this warning, explicitly opt in or out. See `torch.sparse.check_sparse_tensor_invariants.__doc__` for guidance.  (Triggered internally at /Users/runner/work/pytorch/pytorch/aten/src/ATen/Context.cpp:855.)
   self.sparse_rbf_matrix = torch.sparse_csr_tensor(
-/Users/siberia/.t3/projects/v2d-track-2/.venv/lib/python3.11/site-packages/soma/geometry/skeleton_transfer.py:248: UserWarning: Sparse CSR tensor support is in beta state. If you miss a functionality in the sparse tensor support, please submit a feature request to https://github.com/pytorch/pytorch/issues. (Triggered internally at /Users/runner/work/pytorch/pytorch/aten/src/ATen/SparseCsrTensorImpl.cpp:51.)
+$PROJECT/.venv/lib/python3.11/site-packages/soma/geometry/skeleton_transfer.py:248: UserWarning: Sparse CSR tensor support is in beta state. If you miss a functionality in the sparse tensor support, please submit a feature request to https://github.com/pytorch/pytorch/issues. (Triggered internally at /Users/runner/work/pytorch/pytorch/aten/src/ATen/SparseCsrTensorImpl.cpp:51.)
   self.sparse_rbf_matrix = torch.sparse_csr_tensor(
-/Users/siberia/.t3/projects/v2d-track-2/.venv/lib/python3.11/site-packages/torch/jit/_serialization.py:176: FutureWarning: `torch.jit.load` is deprecated. Please switch to `torch.export`.
+$PROJECT/.venv/lib/python3.11/site-packages/torch/jit/_serialization.py:176: FutureWarning: `torch.jit.load` is deprecated. Please switch to `torch.export`.
   warnings.warn(
-/Users/siberia/.t3/projects/v2d-track-2/.venv/lib/python3.11/site-packages/trimesh/visual/texture.py:277: RuntimeWarning: All-NaN slice encountered
+$PROJECT/.venv/lib/python3.11/site-packages/trimesh/visual/texture.py:277: RuntimeWarning: All-NaN slice encountered
   result.append(np.nanmedian(masks_nan, axis=0).astype(np.int64))
-/Users/siberia/.t3/projects/v2d-track-2/.venv/lib/python3.11/site-packages/trimesh/visual/texture.py:277: RuntimeWarning: invalid value encountered in cast
+$PROJECT/.venv/lib/python3.11/site-packages/trimesh/visual/texture.py:277: RuntimeWarning: invalid value encountered in cast
   result.append(np.nanmedian(masks_nan, axis=0).astype(np.int64))
 test_degenerate_alignment_rejected (test_tier3_align.Tier3AlignmentTest.test_degenerate_alignment_rejected) ... ok
 test_folder_export_through_real_soma_reader (test_tier3_align.Tier3AlignmentTest.test_folder_export_through_real_soma_reader) ... ok

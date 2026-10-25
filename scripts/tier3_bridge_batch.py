@@ -18,6 +18,19 @@ from tier3_rest_repair import preflight
 PROTOCOL_SHA256 = 'eec81f1beac187d63cca82ca6b098999be62dff56e7fe1be64c9f874d3af41da'
 
 
+def bridge_code_identity():
+    # Resume must bind the shell, shared smoother/converter and native/IK helpers too.
+    roots = [ROOT / 'scripts', ROOT / 'external/video_to_data/robotic_grounding/scripts/retarget',
+             ROOT / 'external/video_to_data/robotic_grounding/source/robotic_grounding/robotic_grounding/retarget',
+             ROOT / 'external/video_to_data/reconstruction/modules/v2d_cari4d/lib/cari4d/lib_mhr',
+             ROOT / 'external/video_to_data/reconstruction/modules/v2d_sam3d_body/lib/sam_3d_body']
+    files = {p for root in roots for p in root.rglob('*') if p.is_file() and p.suffix in ('.py', '.sh')}
+    patch = ROOT / 'patches/retarget_mesh_refresh.patch'
+    if patch.is_file():
+        files.add(patch)
+    return {str(p.relative_to(ROOT)): digest(p) for p in sorted(files)}
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     for name in ('plan', 'native-root', 'out', 'tier1-root', 'protocol'):
@@ -81,7 +94,7 @@ def main():
                             'legacy_video_sha256': a.legacy_rest_video_sha256}
             result['rest_repair'] = {'status': 'SKIPPED', 'reasons': ['video rest evidence not checked' if evidence_path else 'video rest evidence not configured'], **rest_binding}
             binding = {'plan_row': row, 'protocol_sha256': PROTOCOL_SHA256, 'driver_sha256': digest(Path(__file__)),
-                       'code_sha256': {x.name: digest(x) for x in (ROOT / 'scripts').glob('tier3*.py')},
+                       'code_sha256': bridge_code_identity(),
                        'weights': {str(x.relative_to(ROOT / 'data/tier3_weights')): digest(x) for x in (ROOT / 'data/tier3_weights/sam-3d-body-dinov3').rglob('*') if x.is_file()},
                        'rest_evidence': rest_binding,
                        'rgb_sha256': digest(a.rgb_dir / f'ep{ep:02d}.json') if a.rgb_dir and (a.rgb_dir / f'ep{ep:02d}.json').exists() else None}

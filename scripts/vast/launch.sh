@@ -49,6 +49,22 @@ echo "$id $host $port" > "$D/host"
 echo "$(date -u +%FT%TZ) $id $(git -C "$P" rev-parse HEAD 2>/dev/null || echo no-git) changed_files=$(git -C "$P" status --porcelain 2>/dev/null | wc -l | tr -d ' ')" >> "$D/launch-code.log"
 if [ "${VAST_GUARDED_LAUNCH:-}" != 1 ]; then rm -f "$D/STOPPED" "$D/BACKUP_FAILED" "$D/QUIESCED"; fi
 ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=30 -i "$HOME/.ssh/id_ed25519" -p "$port")
+# A pre-upload watchdog cycle cannot arm a script that is not installed yet.
+ensure_deadman() {
+    [ "${VAST_GUARDED_LAUNCH:-}" = 1 ] || return 0
+    local deadline grace
+    read -r deadline grace < "$D/deadman-arm-$id" || { echo "guarded launch has no deadman budget" >&2; return 1; }
+    [[ "$deadline" =~ ^[0-9]+$ && "$grace" =~ ^[0-9]+$ ]] || return 1
+    ssh "${ssh_opts[@]}" root@"$host" "
+        echo $deadline $grace > /workspace/$name.deadline.tmp && mv /workspace/$name.deadline.tmp /workspace/$name.deadline || exit 1
+        { setsid nohup bash /workspace/v2d-track-2/scripts/vast/deadman.sh $name >> /workspace/$name.deadman.log 2>&1 < /dev/null & }
+        for attempt in {1..50}; do
+            if read -r armed_instance armed_pid < /workspace/$name.deadman.ready 2>/dev/null &&
+               [ \"\$armed_instance\" = $id ] && kill -0 \"\$armed_pid\" 2>/dev/null; then exit 0; fi
+            sleep .1
+        done
+        echo 'box deadman failed to arm; no writer started' >&2; exit 1"
+}
 # An SSH acknowledgement can be lost after the box starts. Preserve that writer and its log on retry.
 existing=$(ssh "${ssh_opts[@]}" root@"$host" "
     if [ -s /workspace/$name.pid ]; then
@@ -57,7 +73,7 @@ existing=$(ssh "${ssh_opts[@]}" root@"$host" "
         if kill -0 \"\$existing_pid\" 2>/dev/null || grep -qE '^box (start|done|failed) ' /workspace/$name.log; then echo started; fi
     fi
     true" | tail -1)
-if [ "$existing" = started ]; then echo "box already launched: $name; original writer retained"; exit 0; fi
+if [ "$existing" = started ]; then ensure_deadman; echo "box already launched: $name; original writer retained"; exit 0; fi
 ssh "${ssh_opts[@]}" root@"$host" "mkdir -p /workspace/v2d-track-2/data/denoise_eval" 2>&1 | grep -v "Welcome\|Have fun" || true
 if [ -f "$D/entry.sh" ]; then
     ssh "${ssh_opts[@]}" root@"$host" "mkdir -p /workspace/v2d-track-2/scripts/tier3_native"
@@ -99,5 +115,6 @@ fi
 for hook in pre post entry; do
     [ ! -f "$D/$hook.sh" ] || rsync -az -e "ssh ${ssh_opts[*]}" "$D/$hook.sh" root@"$host":/workspace/"$name.$hook".sh
 done
+ensure_deadman
 [ "${VAST_GUARDED_LAUNCH:-}" != 1 ] || [ ! -f "$D/STOPPED" ] || { echo "watchdog stopped this instance before launch" >&2; exit 1; }
 ssh "${ssh_opts[@]}" root@"$host" "setsid nohup bash /workspace/$name.sh > /workspace/$name.log 2>&1 < /dev/null & echo \$! > /workspace/$name.pid; echo launched" 2>&1 | grep -v "Welcome\|Have fun"

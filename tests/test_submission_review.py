@@ -177,7 +177,7 @@ class SubmissionReviewTest(unittest.TestCase):
         sample=pd.read_csv(SAMPLE,dtype=str)
         frame=sample_frame(sample.row_id)
         manifest=json.loads((KIT/'KIT_MANIFEST.json').read_text())['files']
-        frame['packer_script_sha256']=manifest['tools/pack_submission.py']
+        frame['packer_script_sha256']=hashlib.sha256((ROOT/'scripts/pack_no_clean.py').read_bytes()).hexdigest()
         frame['uploader_script_sha256']=manifest['submit/v2d_submit.py']
         frame.loc[1,'checkpoint_sha256']='b'*64
         out=self.work/'mixed.csv';frame.to_csv(out,index=False)
@@ -208,9 +208,9 @@ class SubmissionReviewTest(unittest.TestCase):
             self.assertEqual(run.returncode,0,run.stderr)
             calls=[json.loads(s) for s in log.read_text().splitlines()]
             packer=[c for c in calls if c and c[0].endswith('pack_submission.py')]
-            self.assertEqual(len(packer),1 if tier=='tier1' else 0,calls)
+            self.assertEqual(len(packer),0,calls)
+            self.assertEqual(sum(c[0]=='scripts/pack_no_clean.py' for c in calls),1,calls)
             if tier!='tier1':
-                self.assertEqual(sum(c[0]=='scripts/pack_no_clean.py' for c in calls),1,calls)
                 stepcall=next(c for c in calls if c[0]=='scripts/write_checkpoints.py')
                 self.assertEqual(stepcall[stepcall.index('--steps')+1],'49999872')
             self.assertEqual(calls[-1][0],'scripts/validate_offline.py',calls)
@@ -224,6 +224,8 @@ class SubmissionReviewTest(unittest.TestCase):
         path=results/'episode_000000.parquet'
         table=pq.ParquetFile(path).read()
         mutations=[table.slice(1), pa.concat_tables([table,table.slice(0,1)]),
+            *[table.set_column(table.schema.get_field_index('achieved_position_x'),'achieved_position_x',
+                              pa.array([value]*len(table))) for value in (float('nan'),float('inf'))],
             table.set_column(table.schema.get_field_index('environment_valid'),'environment_valid',
                              pa.array([False]*len(table))),
             table.set_column(table.schema.get_field_index('environment_id'),'environment_id',

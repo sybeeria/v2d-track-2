@@ -35,12 +35,8 @@ checkpoint_args=(--runs-root "$runs")
 if [ -n "${CHECKPOINT_MAP:-}" ]; then checkpoint_args=(--checkpoint-map "$CHECKPOINT_MAP"); fi
 "$PACK_PYTHON" scripts/write_checkpoints.py --tier-root "$tier_root" "${checkpoint_args[@]}" \
     --steps "${POLICY_STEPS:-$default_steps}" -o "$out/checkpoints.json"
-frame_args=()
-if [ "$tier" != tier1 ]; then
-    "$PACK_PYTHON" scripts/frame_references.py --work-dir "$work" --tier-root "$tier_root" \
-        -o "$out/frame_references"
-    frame_args=(--frame-references "$out/frame_references")
-fi
+"$PACK_PYTHON" scripts/frame_references.py --work-dir "$work" --tier-root "$tier_root" \
+    -o "$out/frame_references"
 source_args=()
 if [ -n "${SOURCE_ROOT:-}" ]; then
     source_args=(--source-root "$SOURCE_ROOT")
@@ -48,14 +44,9 @@ fi
 "$PYTHON" "$KIT/examples/run_policy_evaluation.py" --checkpoints "$out/checkpoints.json" \
     --results "$out/evaluation" --runtime-root "$FLASH" --world-count 1 \
     ${source_args[@]+"${source_args[@]}"}
-if [ "$tier" = tier1 ]; then
-    "$PACK_PYTHON" "$KIT/tools/pack_submission.py" --track "track_2_$tier" \
-        --results "$out/evaluation" --dataset-root "$dataset" --code-commit "$commit" \
-        -o "$out/track2_$tier.csv"
-else
-    "$PACK_PYTHON" scripts/pack_no_clean.py --track "track_2_$tier" \
-        --results "$out/evaluation" --code-commit "$commit" \
-        "${frame_args[@]}" -o "$out/track2_$tier.csv"
-fi
+# The local builder preserves 17 significant digits; the immutable kit packer rounds to six.
+"$PACK_PYTHON" scripts/pack_no_clean.py --track "track_2_$tier" \
+    --results "$out/evaluation" --code-commit "$commit" \
+    --frame-references "$out/frame_references" -o "$out/track2_$tier.csv"
 # The uploader's --dry-run still authenticates and calls Kaggle. Call only its offline validator.
 "$PACK_PYTHON" scripts/validate_offline.py "$KIT" "$out/track2_$tier.csv" "track_2_$tier"

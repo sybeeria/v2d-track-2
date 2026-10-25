@@ -5,7 +5,7 @@ evaluation trajectory, or submission CSV was produced. The conditional 30-episod
 run was not started. The contract and handoff scripts are checked offline; a real GPU
 train → official evaluator → Tier 1 pack remains the outstanding runtime gate before a full queue.
 
-All paths below are relative to `/Users/siberia/.t3/projects/v2d-track-2`.
+All paths below are relative to `$PROJECT`.
 `FC` means `external/video_to_data/robotic_grounding/flash_chord`;
 `KIT` means `external/kit/v2d_submission_kit`. Upstream HEAD is
 `7eb9721088615fe9201634a6be5cf48b049d1090`. Shared `.venv` and `data/work/` were not modified.

@@ -85,6 +85,9 @@ GO only if the joint six-motion/seed decision prints GO (+2/6 MP, T2-STRATEGY §
 
 ## ~T0+8-12 — Mac bridge (29 new episodes, ~4.5 h)
 
+The bridge's resume check fingerprints every file under `scripts/` and the upstream retarget/IK code (B9 BRIDGE-1):
+don't merge code changes while it runs, or a crash-resume will refuse and the bridge restarts in a fresh root.
+
 ```bash
 RUN="$PWD/data/brainstorm6/T3-BATCH/prepared"
 .venv/bin/python -B scripts/tier3_bridge_batch.py \
@@ -152,8 +155,24 @@ for k in 0 1 2; do cohorts+=(--cohort "runs/t2h$k/qualification"); done
 
 Tier 3 merge takes the five `runs/t3hK/qualification` cohorts after their trees have been restored at their original
 paths. The merge writes `runs/release-tier3/manifest.json` containing all 30 frozen inputs; use that manifest for
-the frame preflight. The exact per-episode converter `poses.npy` files (ep18 from candidate_v1) still need to be
-assembled/transferred into the `--work` directory, as required by I2; training asset payloads alone do not provide it.
+the frame preflight. Restore/transfer the retained bridge tree (including its coverage manifest and completed
+repair markers) and candidate_v1's `sequences/` plus `assets/` to the export host. Training asset payloads alone do not
+provide converter poses. Assemble exact retained bytes, substituting candidate_v1 for ep18, before any export attempt:
+
+```bash
+( set -euo pipefail
+  WORK=data/work/tier3-export
+  MANIFEST=runs/release-tier3/manifest.json
+  TIER=data/challenge/track_2/tier_2_synthetic_noise
+  .venv/bin/python -B scripts/assemble_tier3_work.py assemble --manifest "$MANIFEST" --tier-root "$TIER" \
+    --bridge data/brainstorm6/T3-REST/bridge_oct25 --ep18-work data/brainstorm5/T3-REPAIR/candidate_v1 --work "$WORK"
+  .venv/bin/python -B scripts/assemble_tier3_work.py verify --manifest "$MANIFEST" --tier-root "$TIER" --work "$WORK"
+  .venv/bin/python -B data/brainstorm7/REVIEW/frame_preflight.py "$MANIFEST" "$WORK"
+)
+```
+
+Every step must pass on the export host before `production_repeats.py export --work data/work/tier3-export`.
+The work receipt binds the exact merged manifest, per-reference hashes and copied poses; it transfers with the work tree.
 
 ## Money [I] (operating ceilings; per-host caps above; the credit floor is the only cross-host stop)
 

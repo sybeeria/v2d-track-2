@@ -104,13 +104,15 @@ class I1Decisions(unittest.TestCase):
         self.sequences=['snack','trash','corn'];self.templates={}
         manifest={'sequences':[]}
         for seq in self.sequences:
-            ref=self.root/f'fixtures/{seq}/robot_name=g1/data.parquet';ref.parent.mkdir(parents=True)
+            ref=self.root/f'data/screen/tier2/{seq}/robot_name=g1/data.parquet';ref.parent.mkdir(parents=True)
             mesh=ref.parent.parent/'object/textured_mesh.obj'
             put(mesh,'v 0 0 0\nv .1 0 0\nv 0 .1 0\nf 1 2 3\n')
             pq.write_table(pa.Table.from_pylist([dict(schema_version='motion_v1',object_body_names=['object'],object_mesh_paths=[str(mesh)],
                 object_body_position=np.zeros((10,1,3)).tolist(),object_body_wxyz=np.tile([1.,0,0,0],(10,1,1)).tolist())]),ref)
             identity=dict(path=str(ref),sha256=hashlib.sha256(ref.read_bytes()).hexdigest())
-            manifest['sequences'].append({'sequence':seq,'arms':{'raw_repaired':{'training_reference':identity,'clean_scoring_reference':identity}}})
+            support=self.root/f'data/screen/tier2/{seq}/support.usda';put(support,'#usda 1.0\n')
+            support=dict(path=str(support),sha256=hashlib.sha256(support.read_bytes()).hexdigest(),enabled=False)
+            manifest['sequences'].append({'sequence':seq,'arms':{'raw_repaired':{'training_reference':identity,'clean_scoring_reference':identity,'support':support}}})
             self.templates[seq]={}
             for kind,offset in [('T2C-E4',0.),('T2C-contact',.05)]:
                 path=self.root/f'templates/{seq}/{kind}.parquet';path.parent.mkdir(parents=True,exist_ok=True)
@@ -125,9 +127,14 @@ class I1Decisions(unittest.TestCase):
                 self.templates[seq][kind]=path
         put(self.root/'data/screen/tier2/manifest.json',json.dumps(manifest))
         self.pulled=self.root/'data/brainstorm7/runs/i1screen/pulled/i1screen'
+        shutil.copytree(self.root/'data/screen/tier2',self.pulled/'frozen-screen')
 
     def fixture(self, seed, repeats, *, gains=None, initial_bad=False):
+        screen={e['sequence']:e['arms']['raw_repaired'] for e in json.loads((self.root/'data/screen/tier2/manifest.json').read_text())['sequences']}
         for seq in self.sequences:
+            arm_inputs=screen[seq]
+            recipe={'schema_version':2,'references':{f'raw_repaired/{seq}':{'input':'raw_repaired','sequence':seq,
+                'training':arm_inputs['training_reference'],'scoring':arm_inputs['clean_scoring_reference'],'support':arm_inputs['support']}}}
             sources=dict(self.templates[seq])
             if gains is not None and seq not in gains:sources['T2C-E4']=sources['T2C-contact']
             for kind,source in sources.items():
@@ -135,6 +142,7 @@ class I1Decisions(unittest.TestCase):
                 for repeat in range(1,repeats+1):
                     target=self.pulled/f'repeats/i1/I1-{kind}-s{seed}-{seq}-r{repeat:02d}/{arm}/raw_repaired/evaluation/{seq}/49999872/trajectory.parquet'
                     target.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(source,target)
+                    put(target.parents[4]/'recipe.json',json.dumps(recipe))
                 if initial_bad and kind=='T2C-E4':
                     import pyarrow as pa
                     import pyarrow.parquet as pq

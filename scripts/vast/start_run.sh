@@ -39,6 +39,7 @@ def live(pid):
     return args.endswith(f'{script} {d} {cap} {floor}')
 
 locks = []
+process = None
 if record and record['instance'] == instance and record['cap'] == cap and record['floor'] == floor and live(record['pid']):
     pid, offset = record['pid'], record['log_offset']
     if (d / 'host').read_text().split()[0] != instance:
@@ -67,9 +68,10 @@ else:
 
 end = time.monotonic() + 60
 while True:
-    if not live(pid) or (d / 'STOPPED').exists():
+    ready = live(pid)
+    if (d / 'STOPPED').exists() or (not ready and (process is None or process.poll() is not None)):
         sys.exit('watchdog failed to arm; no writer started; inspect controller.log')
-    if (d / 'watchdog.log').exists() and 'watchdog start ' in (d / 'watchdog.log').read_text()[offset:]:
+    if ready and (d / 'watchdog.log').exists() and 'watchdog start ' in (d / 'watchdog.log').read_text()[offset:]:
         break
     if time.monotonic() >= end:
         sys.exit('watchdog not yet armed; no writer started; retry with the same arguments')

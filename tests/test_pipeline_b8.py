@@ -47,7 +47,7 @@ class Pipeline(unittest.TestCase):
         root = self.work/'roster'
         put(root/'meta/info.json', {'total_episodes':count})
         (root/'meta/episodes_metadata.jsonl').write_text(''.join(
-            json.dumps({'episode_index':i, 'sequence_id':f'seq{i}'})+'\n' for i in range(count)))
+            json.dumps({'episode_index':i, 'sequence_id':f'seq{i}', 'mesh':str(self.mesh)})+'\n' for i in range(count)))
         return root
 
     def manifest(self, episodes, tier, name):

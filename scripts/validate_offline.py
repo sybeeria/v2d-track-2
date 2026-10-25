@@ -38,8 +38,13 @@ def validate(kit, csv, track):
     mixed = sorted(counts[counts > 1].index)
     if mixed:
         raise SystemExit(f"{csv}: 'checkpoint_sha256' must be identical within each episode; episode(s) {mixed[:5]}")
-    # Each row must name the code that wrote it: the kit packer for Tier 1, our no-clean builder for Tiers 2/3.
-    packer = manifest['tools/pack_submission.py'] if track == 'track_2_tier1' else digest(PACK_NO_CLEAN)
+    # Every tier uses the same precision-preserving local builder; stamp its actual bytes.
+    packer = str(frame['packer_script_sha256'].iloc[0]).strip().lower()
+    allowed = {digest(PACK_NO_CLEAN)}
+    if track == 'track_2_tier1':
+        allowed.add(manifest['tools/pack_submission.py'])
+    if packer not in allowed:
+        raise SystemExit(f'{csv}: unknown packer_script_sha256 {packer}')
     for column, expected in [('packer_script_sha256', packer), ('uploader_script_sha256', manifest['submit/v2d_submit.py'])]:
         if not frame[column].astype(str).str.strip().str.lower().eq(expected).all():
             raise SystemExit(f'{csv}: {column} is not {expected}, the code that packs {track}')
