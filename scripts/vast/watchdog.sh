@@ -91,6 +91,11 @@ arm_deadman() {
 pull() {
     [ -n "$host" ] && [ -n "$port" ] || return 1
     arm_deadman
+    # A box that fails in bootstrap never creates its run tree. Nothing is lost by skipping it, while a failing
+    # tree pull would block the soft destroy and bill to the cap (Oct 26 canary).
+    local tree
+    tree=$(remote -n "${ssh_opts[@]}" root@"$host" "if [ -d /workspace/v2d-track-2/runs/$name ]; then echo run tree present; else echo run tree absent; fi" 2>/dev/null | tail -1)
+    case "$tree" in 'run tree present') ;; 'run tree absent') pull_logs; return ;; *) return 1 ;; esac
     bounded rsync -az --partial-dir=.rsync-partial --timeout=90 -e "ssh ${ssh_opts[*]}" --exclude build --exclude '.staging' --exclude '.rsync-partial' --exclude '.batch.lock' --exclude '*.lock' --exclude '.*.tmp' --exclude 'state_*.safetensors' --exclude 'replay_*.safetensors' --exclude '*.ckpt' --exclude '*.pt' \
         root@"$host":/workspace/v2d-track-2/runs/"$name" "$D/pulled/" 2>> "$D/watchdog.log" || return 1
     # A checkpoint can commit after the bulk pull. Copy each selected state with its matching actor.
@@ -121,6 +126,10 @@ for parent in {p.parent for p in keep}:
         if re.fullmatch(r'state_[0-9]+\.safetensors', path.name) and path.relative_to(root) not in keep:
             path.unlink()
 PYPRUNE
+    pull_logs
+}
+
+pull_logs() {
     bounded rsync -az --timeout=90 -e "ssh ${ssh_opts[*]}" root@"$host":'/workspace/*.log' "$D/pulled/" 2>> "$D/watchdog.log" || return 1
     # Publish only after the entire checked pull, so a controller cannot release a
     # canary from a partially transferred tree.

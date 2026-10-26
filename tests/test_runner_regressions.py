@@ -156,6 +156,8 @@ elif tool=='fake_remote':
         event('arm', cmd=cmd)
     elif 'setsid nohup' in cmd:
         event('launch'); print('launched')
+    elif 'echo run tree absent' in cmd:
+        print('run tree absent' if os.environ.get('RUN_TREE_ABSENT') else 'run tree present')
     elif 'then echo done' in cmd:
         print('done' if tick>=4800 else os.environ.get('STATE','done'))
     elif 'PYSTATES' in cmd:
@@ -182,7 +184,7 @@ elif tool=='fake_remote':
 elif tool=='fake_sync':
     event('sync',args=args)
     if any('/runs/' in a for a in args):
-        if os.environ.get('PULL_FAIL') or os.environ.get('RUN_PULL_FAIL'): sys.exit(23)
+        if os.environ.get('PULL_FAIL') or os.environ.get('RUN_PULL_FAIL') or os.environ.get('RUN_TREE_ABSENT'): sys.exit(23)
         excludes=[args[i+1] for i,a in enumerate(args[:-1]) if a=='--exclude']
         source=root/'remote'
         rsources=[a for a in args if a.startswith('root@') and '/runs/' in a]
@@ -317,6 +319,19 @@ class WatchdogTests(Sandbox):
     def test_failed_backup_blocks_soft_destroy(self):
         self.assert_retained_until_credit_floor(PULL_FAIL='1')
         self.assertIn('credit', (self.run / 'BACKUP_FAILED').read_text())
+
+    def test_box_failed_before_creating_its_run_tree_is_destroyed(self):
+        # Oct 26 canary: bootstrap failed before runs/<name> existed, every tree pull failed, and the soft
+        # destroy kept the box billing toward its cap.
+        result = self.watchdog(STATE='failed', RUN_TREE_ABSENT='1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        events = self.events()
+        self.assertEqual([e['kind'] for e in events].count('destroy'), 1)
+        self.assertEqual((self.run / 'STOPPED').read_text().strip(), 'box failed')
+        self.assertFalse((self.run / 'BACKUP_FAILED').exists())
+        syncs = [e['args'] for e in events if e['kind'] == 'sync']
+        self.assertFalse([a for a in syncs if any('/runs/' in x for x in a)])
+        self.assertTrue([a for a in syncs if any(x.endswith(':/workspace/*.log') for x in a)])
 
     def test_failed_run_pull_not_hidden_by_successful_log_pull(self):
         self.assert_retained_until_credit_floor(RUN_PULL_FAIL='1')

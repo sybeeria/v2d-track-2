@@ -106,6 +106,12 @@ if read -r quota period < /sys/fs/cgroup/cpu.max 2>/dev/null && [ "$quota" != ma
     cpus=$(( quota / period ))
 fi
 jobs=$(( cpus / 2 )); [ "$jobs" -ge 1 ] || jobs=1
+# Every retarget process runs on GPU 0 and peaks near 9 GiB: 16 at once ran a 48 GB card out of memory (Oct 26 canary).
+gpu_free=$(nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits -i 0 2>/dev/null | head -1)
+[[ "$gpu_free" =~ ^[0-9]+$ ]] || gpu_free=20480
+gpu_jobs=$(( gpu_free / 10240 )); [ "$gpu_jobs" -ge 1 ] || gpu_jobs=1
+[ "$jobs" -le "$gpu_jobs" ] || jobs=$gpu_jobs
+echo "retarget jobs: $jobs (cpus $cpus, GPU 0 free ${gpu_free} MiB)"
 # BOOTSTRAP_TIERS=tier1 skips Tier 2, e.g. on a short-lived timing box.
 for tier in ${BOOTSTRAP_TIERS:-tier1 tier2}; do
     case $tier in tier1) src=tier_1_multiview_caption ;; tier2) src=tier_2_synthetic_noise ;; esac

@@ -121,10 +121,10 @@ def event(name):
     with (root/'events').open('a') as f: f.write(name+'\n')
 if tool=='b6_gpu':
     if '--query-gpu=driver_version' in args: print('600.0')
-    elif '--query-gpu=memory.free' in args: print('50000')
+    elif '--query-gpu=memory.free' in args: print(os.environ.get('B6_GPU_FREE','50000'))
     else: print('GPU fixture')
 elif tool=='b6_ldconfig': print('libEGL.so.1')
-elif tool=='b6_nproc': print('2')
+elif tool=='b6_nproc': print(os.environ.get('B6_NPROC','2'))
 elif tool=='b6_uv':
     if args[0]=='venv':
         directory=Path(args[-1]); (directory/'bin').mkdir(parents=True,exist_ok=True)
@@ -143,7 +143,7 @@ elif tool in ('b6_curl','b6_apt','b6_unzip'):
 
 
 class BootstrapTests(Sandbox):
-    def test_retry_finishes_interrupted_dependency_installation(self):
+    def bootstrap(self):
         root = self.root
         bins = self.work / 'bin'; bins.mkdir()
         for tool in ('b6_gpu', 'b6_ldconfig', 'b6_nproc', 'b6_uv', 'b6_python',
@@ -162,6 +162,11 @@ class BootstrapTests(Sandbox):
         script.write_text(source)
         self.env.update(PATH=str(bins)+os.pathsep+os.environ['PATH'],
                         BOOTSTRAP_FIXTURE=str(self.work), BOOTSTRAP_TIERS=' ')
+        return script
+
+    def test_retry_finishes_interrupted_dependency_installation(self):
+        root = self.root
+        script=self.bootstrap()
         first=self.execute(['bash',str(script)])
         self.assertEqual(first.returncode,7,first.stdout+first.stderr)
         self.assertTrue((root/'.venv/bin/python').is_file())
@@ -169,6 +174,21 @@ class BootstrapTests(Sandbox):
         self.assertEqual(second.returncode,0,second.stdout+second.stderr)
         self.assertEqual((self.work/'events').read_text().splitlines(),['base-install','base-install'])
         self.assertTrue((self.work/'base-installed').exists())
+
+    def retarget_jobs(self, cpus, gpu_free):
+        script=self.bootstrap()
+        (self.work/'first-attempt').touch()
+        (self.root/'scripts/retarget_tier.sh').write_text('#!/bin/sh\necho "retarget $3" >> "$BOOTSTRAP_FIXTURE/events"\n')
+        result=self.execute(['bash',str(script)],BOOTSTRAP_TIERS='tier1',B6_NPROC=cpus,B6_GPU_FREE=gpu_free)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        return [e for e in (self.work/'events').read_text().splitlines() if e.startswith('retarget ')]
+
+    def test_retarget_parallelism_fits_gpu_memory_on_many_core_hosts(self):
+        # Oct 26 canary: 64 visible cores gave 32 parallel retargets on one 48 GB GPU, which ran out of memory.
+        self.assertEqual(self.retarget_jobs('64','48402'),['retarget 4'])
+
+    def test_retarget_parallelism_still_follows_cpus_on_small_hosts(self):
+        self.assertEqual(self.retarget_jobs('4','48402'),['retarget 2'])
 
 
 class BoxTests(unittest.TestCase):
