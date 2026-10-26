@@ -126,11 +126,7 @@ for parent in {p.parent for p in keep}:
         if re.fullmatch(r'state_[0-9]+\.safetensors', path.name) and path.relative_to(root) not in keep:
             path.unlink()
 PYPRUNE
-    pull_logs
-}
-
-pull_logs() {
-    bounded rsync -az --timeout=90 -e "ssh ${ssh_opts[*]}" root@"$host":'/workspace/*.log' "$D/pulled/" 2>> "$D/watchdog.log" || return 1
+    pull_logs || return 1
     # Publish only after the entire checked pull, so a controller cannot release a
     # canary from a partially transferred tree.
     python3 -I - "$D" "$name" <<'PYPULLRECEIPT'
@@ -142,6 +138,10 @@ record = {'completed_at_ns': time.time_ns(), 'canary': json.loads(canary.read_te
 temp = directory / '.pull.success.tmp'
 temp.write_text(json.dumps(record) + '\n'); temp.replace(directory / 'pull.success.json')
 PYPULLRECEIPT
+}
+
+pull_logs() {
+    bounded rsync -az --timeout=90 -e "ssh ${ssh_opts[*]}" root@"$host":'/workspace/*.log' "$D/pulled/" 2>> "$D/watchdog.log"
 }
 
 # destroy REASON [hard]. Soft reasons keep the instance when it cannot be stopped or backed up and retry next

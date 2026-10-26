@@ -329,6 +329,7 @@ class WatchdogTests(Sandbox):
         self.assertEqual([e['kind'] for e in events].count('destroy'), 1)
         self.assertEqual((self.run / 'STOPPED').read_text().strip(), 'box failed')
         self.assertFalse((self.run / 'BACKUP_FAILED').exists())
+        self.assertFalse((self.run / 'pull.success.json').exists(), 'a log-only pull is not a run-tree backup')
         syncs = [e['args'] for e in events if e['kind'] == 'sync']
         self.assertFalse([a for a in syncs if any('/runs/' in x for x in a)])
         self.assertTrue([a for a in syncs if any(x.endswith(':/workspace/*.log') for x in a)])
