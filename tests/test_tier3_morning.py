@@ -102,6 +102,23 @@ PYWATCH
         while not (self.run/'STOPPED').exists() and time.monotonic()<deadline:time.sleep(.01)
         self.assertTrue((self.run/'STOPPED').exists())
 
+    def test_mac_capacity_reserve_scales_with_the_cohort_frames(self):
+        morning=self.project/'scripts/tier3_native/morning.py'
+        morning.write_text(morning.read_text().replace('(200*1024**3)',"int(os.environ['FIXTURE_FREE_GIB'])*1024**3"))
+        for frames,free,refused in ((22132,152,True),(22132,153,False),(8366,57,True),(8366,58,False)):
+            with self.subTest(frames=frames,free=free):
+                self.plan.write_text(json.dumps({'episodes':[{'episode':0,'sequence':'ep00','frames':frames}]}))
+                result=self.invoke(FIXTURE_FREE_GIB=str(free))
+                self.assertNotEqual(result.returncode,0)
+                reserve=f'reserve {152.7 if frames==22132 else 57.7:.0f} GiB Mac capacity for {frames} frames'
+                if refused:
+                    self.assertIn(reserve,result.stderr)
+                    self.assertFalse((self.run/'host').exists())
+                else:
+                    # Past the reserve, the next guard (cap vs projected inference) is what stops this fixture.
+                    self.assertNotIn('Mac capacity',result.stderr)
+                    self.assertIn('cap below 2x serial inference',result.stderr)
+
     def test_rate_ceiling_fails_before_launch(self):
         self.provider.write_text('#!'+sys.executable+'\nprint(\'{"dph_total":100}\')\n')
         result=self.invoke();self.assertNotEqual(result.returncode,0)

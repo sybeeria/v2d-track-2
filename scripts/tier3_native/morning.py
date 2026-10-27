@@ -37,8 +37,13 @@ def main():
         raise ValueError('run already has a host; use a fresh controller directory for replacement launch')
     verify(a.run)
     backed_up = sum(p.stat().st_size for p in (a.run / 'pulled').rglob('*') if p.is_file() and not p.is_symlink() and not any(part.startswith('.') for part in p.relative_to(a.run / 'pulled').parts))
-    if shutil.disk_usage(a.run).free + backed_up < 150 * 1024**3:
-        raise ValueError('reserve 150 GiB Mac capacity including an existing restored backup')
+    plan = json.loads((a.run / 'payload/plan.json').read_text())
+    frames = sum(r['frames'] for r in plan['episodes'])
+    # Retained reconstructions measured 5.16-5.52 GiB per 1000 frames (the 18 Oct 26 successes); 25% headroom over the
+    # maximum is the former flat 150 GiB for the full 22,132-frame batch.
+    need = frames * 5.52 / 1000 * 1.25 * 1024**3
+    if shutil.disk_usage(a.run).free + backed_up < need:
+        raise ValueError(f'reserve {need / 1024**3:.0f} GiB Mac capacity for {frames} frames including an existing restored backup')
     # This is a real provider call, deliberately confined to this explicitly invoked morning command.
     try:
         instance = json.loads(subprocess.check_output(['vastai', 'show', 'instance', str(a.instance_id), '--raw'], timeout=20))
@@ -47,7 +52,6 @@ def main():
     rate = float(instance['dph_total'])
     if not 0 < rate <= a.hourly_rate_ceiling:
         raise ValueError('offer hourly rate exceeds frozen ceiling')
-    plan = json.loads((a.run / 'payload/plan.json').read_text())
     rows = sorted(plan['episodes'], key=lambda r: (-r['frames'], r['episode']))
     session = {'plan_sha256': digest(a.run / 'payload/plan.json'), 'session_id': uuid.uuid4().hex}
     atomic(a.run / 'payload/session.json', session)
