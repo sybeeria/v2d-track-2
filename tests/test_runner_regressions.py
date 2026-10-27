@@ -131,20 +131,49 @@ def event(kind, **kw):
     with (root/'transport.jsonl').open('a') as f: f.write(json.dumps(dict(kind=kind,**kw))+'\n')
 if tool=='fake_provider':
     if args[:2]==['show','instance']:
-        data={'start_date':time.time()-float(os.environ.get('AGE','0')), 'dph_total':1.2,
+        event('instance')
+        reads=sum(json.loads(l)['kind']=='instance' for l in (root/'transport.jsonl').read_text().splitlines())
+        # VAST_STATUS='TICK=STATUS ...': Vast's actual_status from each tick on, 'running' before the first.
+        schedule=os.environ.get('VAST_STATUS','')
+        if any(json.loads(l)['kind']=='destroy' for l in (root/'transport.jsonl').read_text().splitlines()):
+            schedule=os.environ.get('DESTROY_LOOKUP',schedule)
+        status=([s for t,s in (p.split('=') for p in schedule.split()) if tick>=int(t)] or ['running'])[-1]
+        if status=='api-error':
+            # The real CLI in --raw mode: error JSON on stderr, nothing on stdout, exit 0.
+            print(json.dumps({'error':True,'status_code':401,'msg':'requires Two Factor Authentication'}),file=sys.stderr); sys.exit(0)
+        if status in ('missing','missing-nonzero'):
+            print(json.dumps({'instances':None})); sys.exit(9 if status=='missing-nonzero' else 0)
+        if status=='empty': sys.exit(0)
+        if status=='malformed': print('not JSON'); sys.exit(0)
+        if status=='null': print('null'); sys.exit(0)
+        if status=='error-json': print(json.dumps({'error':True,'status_code':404,'msg':'not found'})); sys.exit(0)
+        if status=='timeout': time.sleep(60)
+        data={'start_date':time.time()-float(os.environ.get('AGE','0')), 'dph_total':1.2, 'actual_status':status,
               'public_ipaddr':'offline.invalid','ports':{'22/tcp':[{'HostPort':'9'}]}}
         if os.environ.get('BAD_INFO'): data.pop('dph_total')
+        if reads<=int(os.environ.get('BAD_INFO_READS','0')): data.pop('dph_total',None)
         print(json.dumps(data))
+        if os.environ.get('INFO_NONZERO'): sys.exit(9)
     elif args[:2]==['show','user']:
         drop=os.environ.get('CREDIT_DROP_TICK')
         print(json.dumps({'credit':.5 if drop and tick>=int(drop) else float(os.environ.get('CREDIT','10'))}))
+    elif args[:2]==['stop','instance']:
+        event('stop',tick=tick)
+        if os.environ.get('STOP_401'):
+            print('Failed with error 401: Authorization Error',file=sys.stderr); sys.exit(0)
+        print('stopping instance '+args[2]+'.')
     elif args[:2]==['destroy','instance']:
         event('destroy')
         attempts=sum(json.loads(l)['kind']=='destroy' for l in (root/'transport.jsonl').read_text().splitlines())
         if attempts<=int(os.environ.get('DESTROY_FAILURES','0')): sys.exit(9)
+        if attempts<=int(os.environ.get('DESTROY_401S','0')):
+            # t1h5, Oct 27: the real CLI's reply after the 2FA login expired, with exit status 0.
+            print('Failed with error 401: Authorization Error. Your key lacks proper privileges to perform this action as it requires you to have logged in using Two Factor Authentication',file=sys.stderr); sys.exit(0)
+        print('destroying instance '+args[2]+'.')
 elif tool=='fake_remote':
     cmd=args[-1]
     (root/'remote-ready').touch()
+    if os.environ.get('UNREACHABLE'): sys.exit(255)
     time.sleep(float(os.environ.get('TRANSPORT_DELAY','0')))
     parsed=subprocess.run(['bash','-n'],input=cmd,text=True,capture_output=True)
     if parsed.returncode:
@@ -153,7 +182,7 @@ elif tool=='fake_remote':
         event('quiesce')
         if os.environ.get('STOP_FAIL'): sys.exit(1)
     elif 'deadman.sh' in cmd:
-        event('arm', cmd=cmd)
+        event('arm', cmd=cmd, script=sys.stdin.read())
     elif 'setsid nohup' in cmd:
         event('launch'); print('launched')
     elif 'echo run tree absent' in cmd:
@@ -183,6 +212,7 @@ elif tool=='fake_remote':
     else: print('offline status')
 elif tool=='fake_sync':
     event('sync',args=args)
+    if os.environ.get('UNREACHABLE'): sys.exit(255)
     if any('/runs/' in a for a in args):
         if os.environ.get('PULL_FAIL') or os.environ.get('RUN_PULL_FAIL') or os.environ.get('RUN_TREE_ABSENT'): sys.exit(23)
         excludes=[args[i+1] for i,a in enumerate(args[:-1]) if a=='--exclude']
@@ -306,7 +336,7 @@ class WatchdogTests(Sandbox):
         self.assertEqual(result.returncode, 0, result.stderr)
         kinds = [e['kind'] for e in self.events()]
         self.assertEqual(kinds.count('destroy'), 1)
-        self.assertEqual(kinds.count('quiesce'), 5)  # four soft attempts at ticks 0-1800, then the hard one
+        self.assertEqual(kinds.count('quiesce'), 4)  # three soft attempts at ticks 0-1200, then the hard one at 1800
         self.assertIn('credit', (self.run / 'STOPPED').read_text())
 
     def test_failed_state_transfer_keeps_old_backup_and_box(self):
@@ -347,6 +377,67 @@ class WatchdogTests(Sandbox):
         self.assertLess(log.rindex('destroy failed'), log.index('destroy requested'))
         self.assertEqual((self.run / 'STOPPED').read_text().strip(), 'finished')
 
+    def destroy_ticks(self):
+        p = self.bin / 'fake_provider'
+        p.write_text(p.read_text().replace("event('destroy')", "event('destroy',tick=tick)"))
+        return lambda: [e['tick'] for e in self.events() if e['kind'] == 'destroy']
+
+    def test_destroy_refused_with_exit_0_is_retried_not_recorded_as_stopped(self):
+        # t1h5, Oct 27: `vastai destroy` printed a 401 (2FA login expired) and exited 0; the watchdog wrote STOPPED
+        # and exited while the instance kept billing.
+        ticks = self.destroy_ticks()
+        p = subprocess.Popen(['bash', 'scripts/vast/watchdog.sh', str(self.run), '100', '1'], cwd=self.root,
+                             env={**self.env, 'DESTROY_401S': '99'}, stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE, text=True, start_new_session=True)
+        log = lambda: (self.run / 'watchdog.log').read_text() if (self.run / 'watchdog.log').exists() else ''
+        try:
+            deadline = time.monotonic() + 20
+            while log().count('destroy failed (finished); retrying next cycle') < 3 and p.poll() is None \
+                    and time.monotonic() < deadline: time.sleep(.05)
+            self.assertIsNone(p.poll(), 'watchdog exited after a refused destroy')
+        finally:
+            try: os.killpg(p.pid, 9)
+            except ProcessLookupError: pass
+            p.communicate()
+        self.assertEqual(ticks()[:3], [0, 600, 1200])
+        self.assertFalse((self.run / 'STOPPED').exists())
+        self.assertIn('Failed with error 401: Authorization Error', log())
+        self.assertNotIn('destroy requested', log())
+        # The writer was stopped and backed up once; retries only repeat the request.
+        self.assertEqual([e['kind'] for e in self.events()].count('quiesce'), 1)
+        # Meanwhile the box deadman is told to stop the instance now (fake clock: 100000 + tick).
+        self.assertIn((100000, 5400), self.arming())
+        emergency = next(e for e in self.events() if e['kind']=='arm' and 'echo 100000 5400' in e['cmd'])
+        self.assertEqual(emergency['script'], (self.root/'scripts/vast/deadman.sh').read_text())
+
+    def test_host_stopped_instance_is_destroyed_when_vast_reports_it(self):
+        # t1h1, Oct 26: the host stopped the instance; SSH never answered again and the box held its cap for hours.
+        # SSH fails from tick 0; Vast reports running until 4200, so a dead link alone never destroys.
+        ticks = self.destroy_ticks()
+        result = self.watchdog(UNREACHABLE='1', VAST_STATUS='4200=exited', CREDIT_DROP_TICK='6000')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(ticks(), [4200])
+        self.assertEqual((self.run / 'STOPPED').read_text(), 'instance exited and unreachable for 60 min\n')
+        self.assertEqual((self.run / 'BACKUP_FAILED').read_text(), 'instance exited and unreachable for 60 min\n')
+        self.assertIn('state=unreachable', (self.run / 'watchdog.log').read_text())
+
+    def test_vast_api_failure_never_destroys_an_unreachable_instance(self):
+        # The 2FA case: show instance prints only an error and exits 0. Nothing is known, so nothing is destroyed.
+        ticks = self.destroy_ticks()
+        result = self.watchdog(UNREACHABLE='1', VAST_STATUS='600=api-error 4800=exited', CREDIT_DROP_TICK='6000')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(ticks(), [4800])
+        self.assertEqual((self.run / 'STOPPED').read_text(), 'instance exited and unreachable for 60 min\n')
+
+    def test_known_credit_breach_goes_straight_to_the_final_backup(self):
+        result = self.watchdog(STATE='running', CREDIT='.5')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        # Stop the writer, one final pull (run tree, states, logs), destroy: no routine pull in between.
+        self.assertEqual([e['kind'] for e in self.events() if e['kind'] in ('quiesce', 'arm', 'sync', 'destroy')],
+                         ['quiesce', 'arm', 'sync', 'sync', 'sync', 'destroy'])
+        self.assertEqual((self.run / 'STOPPED').read_text(), 'credit $0.5 below $1\n')
+        self.assertEqual((self.run / 'pulled/batch/state_20.safetensors').read_text(), 'owned fixture state_20.safetensors')
+
     def test_budget_stops_writer_then_pulls_then_destroys(self):
         result = self.watchdog(cap='0', STATE='running')
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -370,10 +461,23 @@ class WatchdogTests(Sandbox):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('credit', (self.run / 'STOPPED').read_text())
 
-    def test_invalid_instance_metadata_fails_before_arming(self):
+    def test_invalid_instance_metadata_enters_bounded_emergency_custody(self):
         result = self.watchdog(BAD_INFO='1', STATE='running')
-        self.assertNotEqual(result.returncode, 0)
-        self.assertNotIn('destroy', [e['kind'] for e in self.events()])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([e['kind'] for e in self.events()].count('instance'), 3)
+        self.assertEqual([e['tick'] for e in self.events() if e['kind']=='stop'], [10])
+        self.assertEqual((self.run/'deadman-arm-123').read_text(), '100010 5400\n')
+        self.assertNotIn('watchdog start ', (self.run/'watchdog.log').read_text())
+        self.assertEqual((self.run/'STOPPED').read_text(), 'instance metadata unavailable\n')
+        self.assertEqual(result.stderr.count("KeyError: 'dph_total'"), 3)
+
+    def test_late_metadata_recovery_cannot_extend_discovery_budget(self):
+        result = self.watchdog(BAD_INFO_READS='4')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([e['kind'] for e in self.events()].count('instance'), 3)
+        self.assertEqual([e['tick'] for e in self.events() if e['kind']=='stop'], [10])
+        self.assertNotIn('watchdog start ', (self.run/'watchdog.log').read_text())
+        self.assertEqual((self.run/'STOPPED').read_text(), 'instance metadata unavailable\n')
 
     def test_live_process_with_no_progress_is_stopped(self):
         result = self.watchdog(STATE='running')

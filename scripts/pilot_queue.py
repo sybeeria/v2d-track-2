@@ -208,6 +208,7 @@ def run_sequence(job, arm_dir, overrides, total, args, python, pack_python, flas
                 # Outputs from an older attempt cannot prove that this evaluator invocation produced them.
                 trajectory.unlink(missing_ok=True)
                 metrics.unlink(missing_ok=True)
+                write_json(result / 'evaluation.attempt.json', identity)
             run([python, EVALUATOR,
                  f'evaluation.checkpoint={checkpoint}', 'evaluation.world_count=1',
                  'evaluation.reset_mode=explicit', f'evaluation.metrics_output={metrics}',

@@ -38,11 +38,15 @@ def capture(args):
         for rel,h in files.items():
             if digest(args.archive/'files'/rel)!=h:raise ValueError('frozen archive corrupt')
         return
-    args.archive.mkdir(parents=True)
+    # Publish by one rename: an interrupted copy stays in the watchdog-excluded .staging and the retry discards it.
+    staging=args.archive.parent/'.staging'/args.archive.name
+    if staging.exists():shutil.rmtree(staging)
+    staging.mkdir(parents=True)
     for rel,h in files.items():
-        out=args.archive/'files'/rel;out.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(ROOT/rel,out)
+        out=staging/'files'/rel;out.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(ROOT/rel,out)
         if digest(out)!=h:raise ValueError('input changed during copy')
-    (args.archive/'manifest.json').write_text(json.dumps(identity,indent=2)+'\n')
+    (staging/'manifest.json').write_text(json.dumps(identity,indent=2)+'\n')
+    staging.rename(args.archive)
     print(f'frozen input closure: {len(files)} files')
 
 def restore(args):

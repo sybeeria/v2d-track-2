@@ -106,14 +106,18 @@ class Review2(unittest.TestCase):
         h = self.fixture()
         # Preserve production T=1800 and grace arithmetic. Advance only external
         # fake clock/transport durations; the real watchdog/deadman make decisions.
+        def inject(code, anchor, extra):
+            # A silently missed anchor leaves the fake without this clock, and the test then measures nothing.
+            self.assertIn(anchor, code)
+            return code.replace(anchor, anchor + extra)
         for tool in ('fake_sync','fake_remote'):
             path = h.bin/tool
             code = path.read_text()
             if tool == 'fake_sync':
-                code = code.replace("event('sync',args=args)", "event('sync',args=args)\n    clock.write_text(str(tick+1750)); time.sleep(.15)")
+                code = inject(code, "event('sync',args=args)", "\n    clock.write_text(str(tick+1750)); time.sleep(.15)")
             else:
-                code = code.replace("event('arm', cmd=cmd)", "event('arm', cmd=cmd)\n        import re\n        grace=re.search(r'echo ([0-9]+) ([0-9]+)',cmd)[2]\n        (root/'heartbeat').write_text(str(tick))\n        (root/'batch.deadline').write_text('9999999999 '+grace+'\\n')")
-                code = code.replace("elif 'PYSTATES' in cmd:", "elif 'PYSTATES' in cmd:\n        clock.write_text(str(tick+1750)); time.sleep(.15)")
+                code = inject(code, "event('arm', cmd=cmd, script=sys.stdin.read())", "\n        import re\n        grace=re.search(r'echo ([0-9]+) ([0-9]+)',cmd)[2]\n        (root/'heartbeat').write_text(str(tick))\n        (root/'batch.deadline').write_text('9999999999 '+grace+'\\n')")
+                code = inject(code, "elif 'PYSTATES' in cmd:", "\n        clock.write_text(str(tick+1750)); time.sleep(.15)")
             path.write_text(code)
         date = h.bin/'fake_date'
         code = date.read_text().replace("elif tool=='fake_date':", "elif tool=='fake_date':\n    if '-r' in args:\n        print(100000+int((root/'heartbeat').read_text())); sys.exit(0)")

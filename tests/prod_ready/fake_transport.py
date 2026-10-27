@@ -7,16 +7,36 @@ def event(kind,**kw):
     with (home/'transport.jsonl').open('a') as f:f.write(json.dumps({'kind':kind,**kw})+'\n')
 def remap(s):return re.sub(r'(?<![A-Za-z0-9_./-])/workspace',str(workspace),s)
 if tool=='fake_provider':
-    if args[:2]==['show','instance']:print(json.dumps({'start_date':time.time(),'dph_total':1.26,'public_ipaddr':'offline.invalid','ports':{'22/tcp':[{'HostPort':'9'}]}}))
+    if args[:2]==['show','instance']:
+        event('instance')
+        if os.environ.get('TRANSPORT_INSTANCE_JSON'):
+            print(os.environ['TRANSPORT_INSTANCE_JSON']);sys.exit(0)
+        reply=os.environ.get('TRANSPORT_INSTANCE_REPLY','')
+        if reply=='api-error':
+            print(json.dumps({'error':True,'status_code':401,'msg':'requires Two Factor Authentication'}),file=sys.stderr);sys.exit(0)
+        if reply=='empty':sys.exit(0)
+        if reply=='nonzero':sys.exit(9)
+        if reply=='malformed':print('not JSON');sys.exit(0)
+        if reply=='missing':print(json.dumps({'instances':None}));sys.exit(0)
+        if reply=='null':print('null');sys.exit(0)
+        if reply=='bad-port':
+            print(json.dumps({'start_date':time.time(),'dph_total':1.26,'public_ipaddr':'offline.invalid','ports':{'22/tcp':[{}]}}));sys.exit(0)
+        print(json.dumps({'start_date':time.time(),'dph_total':1.26,'actual_status':'running','public_ipaddr':'offline.invalid','ports':{'22/tcp':[{'HostPort':'9'}]}}))
     elif args[:2]==['show','user']:print(json.dumps({'credit':10}))
-    elif args[:2]==['destroy','instance']:event('destroy')
+    elif args[:2]==['stop','instance']:
+        event('stop')
+        if os.environ.get('TRANSPORT_STOP_DENIED'):
+            print('Failed with error 401: Authorization Error',file=sys.stderr);sys.exit(0)
+        print(f'stopping instance {args[2]}.')
+    # The real CLI's only confirmation; it exits 0 on refusals too.
+    elif args[:2]==['destroy','instance']:event('destroy');print(f'destroying instance {args[2]}.')
 elif tool=='fake_remote':
-    cmd=remap(args[-1]);event('remote',command=cmd)
+    cmd=remap(args[-1]);event('remote',command=cmd,args=args)
     if 'scripts/vast/deadman.sh' in cmd:
         event('arm_deadman')
     elif 'setsid nohup' in cmd:
-        script=Path(re.search(r'setsid nohup bash\s+(\S+)',cmd)[1]);name=script.stem
-        with (workspace/f'{name}.log').open('w') as log:
+        launch=re.search(r'setsid nohup bash\s+(\S+)\s+(>>?)',cmd);name=Path(launch[1]).stem
+        with (workspace/f'{name}.log').open('a' if launch[2]=='>>' else 'w') as log:
             proc=subprocess.Popen(['bash',str(workspace/f'{name}.sh')],cwd=workspace,stdout=log,stderr=log,start_new_session=True)
         (home/'box-process').write_text(str(proc.pid))
         # A replacement box overwrites box-process; keep every group so stop_box also reaps replaced boxes.

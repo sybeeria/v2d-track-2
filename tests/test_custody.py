@@ -109,7 +109,8 @@ class Startup(unittest.TestCase):
         self.assertNotEqual(first.returncode, 0)
         self.assert_guard()
         pid = (self.h.run / 'controller-watchdog.pid').read_text()
-        self.assertEqual((self.h.run / 'host').read_text().split(), ['123'])
+        # The same instance's last known address stays usable for emergency SSH custody.
+        self.assertEqual((self.h.run / 'host').read_text(), '123 offline.invalid 9\n')
         second = self.start()
         self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
         self.assert_guard()
@@ -124,10 +125,47 @@ class Startup(unittest.TestCase):
         code = provider.read_text().replace("if args[:2]==['show','instance']:", "if args[:2]==['show','instance']:\n        counter=root/'instance-reads'; n=int(counter.read_text())+1 if counter.exists() else 1; counter.write_text(str(n))\n        if n==2: sys.exit(29)")
         provider.write_text(code)
         result = self.start()
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         # Observe the actual child, not Popen's successful return or the PID receipt.
         self.assert_guard()
+        pid = (self.h.run/'controller-watchdog.pid').read_text()
+        self.assertEqual((self.h.work/'instance-reads').read_text(), '2')
+        retry = self.start()
+        self.assertEqual(retry.returncode, 0, retry.stdout + retry.stderr)
+        self.assertEqual((self.h.run/'controller-watchdog.pid').read_text(), pid)
+        self.assertEqual([e['kind'] for e in self.h.events()].count('launch'), 1)
         print('TRANSIENT_METADATA: watchdog live, instance_reads=', (self.h.work / 'instance-reads').read_text(), flush=True)
+
+    def test_initial_lookup_failure_still_starts_emergency_custody_without_a_writer(self):
+        result = self.start(BAD_INFO='1')
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        record = self.h.run/'controller-watchdog.pid'
+        self.assertTrue(record.exists(), result.stderr)
+        self.assertTrue(until(lambda: any(e['kind']=='stop' for e in self.h.events())))
+        self.assertEqual([e for e in self.h.events() if e['kind']=='launch'], [])
+        log = (self.h.run/'watchdog.log').read_text()
+        self.assertNotIn('watchdog start ', log)
+        self.assertTrue((self.h.run/'deadman-arm-123').exists())
+
+    def test_failed_lookup_on_restart_retains_cached_guard_and_box_work(self):
+        (self.h.run/'instance-metadata.json').write_text(json.dumps({
+            'instance':'123', 'start_date':time.time(), 'dph_total':1.2}))
+        result = self.start(BAD_INFO='1')
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assert_guard()
+        self.assertEqual([e for e in self.h.events() if e['kind'] in ('launch','stop','destroy')], [])
+        self.assertEqual((self.h.run/'pulled/batch/state_20.safetensors').read_text(), 'owned fixture state_20.safetensors')
+
+    def test_fresh_lookup_failure_without_an_ssh_address_still_requests_a_stop(self):
+        (self.h.run/'host').unlink()
+        result = self.start(BAD_INFO='1')
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertTrue((self.h.run/'controller-watchdog.pid').exists(), result.stderr)
+        self.assertTrue(until(lambda: any(e['kind']=='stop' for e in self.h.events())))
+        self.assertEqual((self.h.run/'host').read_text().split(), ['123'])
+        self.assertEqual([e for e in self.h.events() if e['kind'] in ('launch','destroy')], [])
+        self.assertFalse((self.h.run/'STOPPED').exists())
+        self.assertNotIn('watchdog start ', (self.h.run/'watchdog.log').read_text())
 
     def test_missing_ssh_endpoint_still_enforces_the_instance_cap(self):
         (self.h.run / 'host').write_text('123  \n')

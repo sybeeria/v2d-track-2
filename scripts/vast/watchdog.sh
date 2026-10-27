@@ -2,9 +2,11 @@
 # Usage: scripts/vast/watchdog.sh RUN_DIR CAP_DOLLARS [CREDIT_FLOOR]   (run detached under caffeinate)
 # Every 10 min: logs status to RUN_DIR/watchdog.log and pulls runs/<run> (including policy and learner checkpoints) and /workspace/*.log into
 # RUN_DIR/pulled. Destroys the instance in RUN_DIR/host after a final pull when the box script has logged "box done",
-# when it has been gone for 60 min without that (unless RUN_DIR/KEEP exists), when this instance's estimated spend
-# reaches CAP_DOLLARS, or when the account's Vast credit falls below CREDIT_FLOOR (default 1). Each pull also arms
-# scripts/vast/deadman.sh on the box, which stops the instance itself if this watchdog stops working.
+# when it has been gone for 60 min without that, when SSH has failed for 60 min and Vast reports the instance
+# exited/stopped/offline (neither unless RUN_DIR/KEEP exists), when this instance's estimated spend reaches
+# CAP_DOLLARS, or when the account's Vast credit falls below CREDIT_FLOOR (default 1). STOPPED is written only once
+# Vast confirms the destroy request. Each pull also arms scripts/vast/deadman.sh on the box, which stops the instance
+# itself if this watchdog stops working or cannot get a destroy request through.
 set -uo pipefail
 unset HF_TOKEN HUGGING_FACE_HUB_TOKEN HUGGINGFACEHUB_API_TOKEN
 D=$(cd "${1:?run dir}" && pwd) cap=${2:?cap dollars} floor=${3:-1}
@@ -35,10 +37,10 @@ PYWATCHLOCK
 fi
 # Bound wall time as well as socket inactivity: a live remote process can hang forever.
 bounded() {
-    python3 -I - "$@" <<'PYBOUND'
+    python3 -I - "$@" 3<&0 <<'PYBOUND'
 import os, signal, subprocess, sys, time
 timeout = float(os.environ.get('WATCHDOG_COMMAND_TIMEOUT_SECONDS', '120'))
-with subprocess.Popen(sys.argv[1:], start_new_session=True, close_fds=False) as process:
+with subprocess.Popen(sys.argv[1:], stdin=3, start_new_session=True, close_fds=False) as process:
     try:
         sys.exit(process.wait(timeout=timeout))
     except subprocess.TimeoutExpired:
@@ -62,19 +64,8 @@ PYBOUND
 remote() { [ -n "$host" ] && [ -n "$port" ] || return 1; bounded ssh "$@"; }
 
 ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=2 -i "$HOME/.ssh/id_ed25519" -p "$port")
-for attempt in 1 2 3; do
-    if read -r start rate < <(bounded vastai show instance "$id" --raw | python3 -I -c "import json,sys,math; o=json.load(sys.stdin); s,r=float(o['start_date']),float(o['dph_total']); assert math.isfinite(s) and s>0 and math.isfinite(r) and r>0; print(s,r)"); then break; fi
-    [ "$attempt" -lt 3 ] || { echo "cannot read valid instance start/rate; watchdog not armed" >&2; exit 1; }
-    sleep 5
-done
 python3 -I -c "import sys,math; c,f=map(float,sys.argv[1:]); assert all(math.isfinite(x) and x>=0 for x in (c,f))" "$cap" "$floor" || exit 2
-# The box-side backstop (scripts/vast/deadman.sh) stops the instance 30 min past the cap if this watchdog cannot.
-deadline=$(python3 -I -c "import sys; s,c,r=map(float,sys.argv[1:]); print(int(s + c / r * 3600 + 1800))" "$start" "$cap" "$rate")
 mkdir -p "$D/pulled"
-# The first pre-upload pull can precede installation of deadman.sh. The launcher needs this budget to arm it.
-grace=$(( 10 * ${WATCHDOG_COMMAND_TIMEOUT_SECONDS:-120} + 1200 )); [ "$grace" -ge 5400 ] || grace=5400
-[ ! -e "$D/KEEP" ] || grace=0
-printf '%s %s\n' "$deadline" "$grace" > "$D/deadman-arm-$id"
 log() { echo "$(date -u +%FT%TZ) $*" >> "$D/watchdog.log"; }
 
 # Re-armed at the start of every pull, including the final ones, so the deadman sees a live watchdog throughout a
@@ -82,10 +73,16 @@ log() { echo "$(date -u +%FT%TZ) $*" >> "$D/watchdog.log"; }
 # the 600 s sleep, three status commands and the next arm, each bounded by T.
 arm_deadman() {
     local grace=$(( 10 * ${WATCHDOG_COMMAND_TIMEOUT_SECONDS:-120} + 1200 )); [ "$grace" -ge 5400 ] || grace=5400
+    local install= input=/dev/null
+    if [ "${2:-}" = install ]; then
+        # A fresh rental may have neither a project upload nor a deadman yet.
+        install="mkdir -p /workspace/v2d-track-2/scripts/vast && cat > /workspace/v2d-track-2/scripts/vast/deadman.sh.tmp && mv /workspace/v2d-track-2/scripts/vast/deadman.sh.tmp /workspace/v2d-track-2/scripts/vast/deadman.sh && "
+        input="$(dirname "$0")/deadman.sh"
+    fi
     [ ! -e "$D/KEEP" ] || grace=0
-    remote -n "${ssh_opts[@]}" root@"$host" "echo $deadline $grace > /workspace/$name.deadline.tmp && mv /workspace/$name.deadline.tmp /workspace/$name.deadline &&
+    remote "${ssh_opts[@]}" root@"$host" "${install}echo ${1:-$deadline} $grace > /workspace/$name.deadline.tmp && mv /workspace/$name.deadline.tmp /workspace/$name.deadline &&
         { setsid nohup bash /workspace/v2d-track-2/scripts/vast/deadman.sh $name >> /workspace/$name.deadman.log 2>&1 < /dev/null & }" \
-        >> "$D/watchdog.log" 2>&1 || log "cannot arm box deadman"
+        < "$input" >> "$D/watchdog.log" 2>&1 || log "cannot arm box deadman"
 }
 
 pull() {
@@ -167,13 +164,76 @@ destroy() {
         [ -n "$hard" ] || return 1
         echo "$1" > "$D/BACKUP_FAILED"
     fi
-    if ! bounded vastai destroy instance "$id" -y >> "$D/watchdog.log" 2>&1; then
-        log "destroy failed ($1); retrying next cycle"; return 1
+    destroying=$1
+    request_destroy
+}
+
+# Later cycles retry only this request; the writer is already stopped and the final backup taken or given up.
+request_destroy() {
+    local reply confirmed
+    reply=$(bounded vastai destroy instance "$id" -y 2>&1); confirmed=$?
+    printf '%s\n' "$reply" >> "$D/watchdog.log"
+    # The CLI exits 0 when Vast refuses the request (a 401 after the 2FA login expired, Oct 27); only this
+    # line, printed by all 13 real destroys, confirms one.
+    if [ "$confirmed" -ne 0 ] || ! grep -qxF "destroying instance $id." <<< "$reply"; then
+        # Only an explicit missing-instance result proves absence; API errors leave stdout empty.
+        if bounded vastai show instance "$id" --raw 2>/dev/null | python3 -I -c 'import json,sys; sys.exit(0 if json.load(sys.stdin)=={"instances":None} else 1)' 2>/dev/null; then
+            log "instance $id no longer exists at Vast ($destroying)"
+            echo "instance $id no longer exists at Vast ($destroying)" > "$D/STOPPED"
+            exit 0
+        fi
+        log "destroy failed ($destroying); retrying next cycle"
+        # Meanwhile the box stops itself with its own Vast key, keeping its disk.
+        arm_deadman "$(date +%s)" install
+        return 1
     fi
-    log "destroy requested for instance $id ($1)"; echo "$1" > "$D/STOPPED"
+    log "destroy requested for instance $id ($destroying)"; echo "$destroying" > "$D/STOPPED"
     exit 0
 }
 
+destroying=
+# Reuse the original rental clock across API/auth failures and controller restarts.
+metadata='import json,math,sys; from pathlib import Path
+p=Path(sys.argv[1]); instance=sys.argv[2]
+o=json.loads(p.read_text()) if sys.argv[3]=="cache" else json.load(sys.stdin)
+if sys.argv[3]=="cache": assert o["instance"]==instance
+s,r=float(o["start_date"]),float(o["dph_total"])
+assert math.isfinite(s) and s>0 and math.isfinite(r) and r>0
+if sys.argv[3]!="cache":
+    temp=p.with_suffix(".tmp"); temp.write_text(json.dumps({"instance":instance,"start_date":s,"dph_total":r})+"\n"); temp.replace(p)
+print(s,r)'
+if ! read -r start rate < <(python3 -I -c "$metadata" "$D/instance-metadata.json" "$id" cache 2>/dev/null); then
+    for attempt in 1 2 3; do
+        if read -r start rate < <(reply=$(bounded vastai show instance "$id" --raw) && printf '%s' "$reply" | python3 -I -c "$metadata" "$D/instance-metadata.json" "$id" provider); then break; fi
+        [ "$attempt" -eq 3 ] || sleep 5
+    done
+fi
+grace=$(( 10 * ${WATCHDOG_COMMAND_TIMEOUT_SECONDS:-120} + 1200 )); [ "$grace" -ge 5400 ] || grace=5400
+[ ! -e "$D/KEEP" ] || grace=0
+if [ -z "$start" ] || [ -z "$rate" ]; then
+    deadline=$(date +%s)
+    printf '%s %s\n' "$deadline" "$grace" > "$D/deadman-arm-$id"
+    log "cannot read valid instance start/rate; emergency stop; retaining disk until backup succeeds"
+    while true; do
+        if read -r bound_id next_host next_port < "$D/host" && [ "$bound_id" = "$id" ]; then host=$next_host; port=$next_port; fi
+        ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=2 -i "$HOME/.ssh/id_ed25519" -p "$port")
+        arm_deadman "$deadline" install
+        reply=$(bounded vastai stop instance "$id" 2>&1); confirmed=$?
+        printf '%s\n' "$reply" >> "$D/watchdog.log"
+        if [ "$confirmed" -eq 0 ] && grep -qxF "stopping instance $id." <<< "$reply"; then
+            log "stop requested for instance $id (instance metadata unavailable)"
+        else
+            log "stop failed (instance metadata unavailable); retrying next cycle"
+        fi
+        # Unknown spend cannot justify deleting unpulled work. A stop keeps its disk; destroy needs a backup.
+        if [ -n "$destroying" ]; then request_destroy; else destroy "instance metadata unavailable"; fi
+        sleep 60
+    done
+fi
+# The launcher installs the backstop from this budget before starting any writer.
+deadline=$(python3 -I -c "import sys; s,c,r=map(float,sys.argv[1:]); print(int(s + c / r * 3600 + 1800))" "$start" "$cap" "$rate")
+printf '%s %s\n' "$deadline" "$grace" > "$D/deadman-arm-$id"
+unreachable_since=
 dead_since=
 progress_before=
 progress_since=$(date +%s)
@@ -195,6 +255,13 @@ while true; do
             grep -E '^training progress' \"\$f\" | tail -1 | cut -c1-120; done
         tail -1 /workspace/gpu_samples.log 2>/dev/null" > "$D/status.txt" 2>/dev/null
     log "state=${state:-unreachable} spend=\$$spend credit=\$${credit:-?} $(tr '\n' '|' < "$D/status.txt" | cut -c1-400)"
+    # A known hard breach goes straight to the final pull instead of waiting behind this cycle's routine one.
+    if [ -n "$destroying" ]; then request_destroy
+    elif python3 -I -c "import sys; sys.exit(0 if $spend >= $cap else 1)"; then destroy "budget cap \$$cap" hard
+    elif [ -n "$credit" ] && python3 -I -c "import sys; sys.exit(0 if $credit < $floor else 1)"; then destroy "credit \$$credit below \$$floor" hard
+    fi
+    # Once destruction is decided, only retry it: a routine pull would re-arm the original deadline over the box's stop.
+    [ -z "$destroying" ] || { sleep 600; continue; }
     pull
     if [ "$state" = running ]; then
         active=$(remote -n "${ssh_opts[@]}" root@"$host" "python3 - /workspace/v2d-track-2/runs/$name <<'PYJOBS'
@@ -258,7 +325,12 @@ print("stalled" if stalled else "active")' "$D/job-progress-$id.json" "$(date +%
               if [ ! -e "$D/KEEP" ] && [ $(( $(date +%s) - dead_since )) -ge 3600 ]; then destroy "box script dead"; fi ;;
         *) dead_since= ;;
     esac
-    if python3 -I -c "import sys; sys.exit(0 if $spend >= $cap else 1)"; then destroy "budget cap \$$cap" hard; fi
-    if [ -n "$credit" ] && python3 -I -c "import sys; sys.exit(0 if $credit < $floor else 1)"; then destroy "credit \$$credit below \$$floor" hard; fi
+    # SSH alone cannot tell a host-stopped instance from a flaky link (t1h1, Oct 26); Vast's own status can. An
+    # API failure yields no status, so it never destroys; the box deadman covers that case.
+    if [ -n "$state" ]; then unreachable_since=; else unreachable_since=${unreachable_since:-$(date +%s)}; fi
+    if [ -n "$unreachable_since" ] && [ ! -e "$D/KEEP" ] && [ $(( $(date +%s) - unreachable_since )) -ge 3600 ]; then
+        vast_status=$(bounded vastai show instance "$id" --raw 2>/dev/null | python3 -I -c "import json,sys; print(json.load(sys.stdin)['actual_status'])" 2>/dev/null)
+        case "$vast_status" in exited|stopped|offline) destroy "instance $vast_status and unreachable for 60 min" hard ;; esac
+    fi
     sleep 600
 done

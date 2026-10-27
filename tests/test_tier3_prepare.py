@@ -56,6 +56,53 @@ class PreparationTests(unittest.TestCase):
         p=self.prompts/'ep01.json';value=json.loads(p.read_text());value['prompts'][1]['box']['x1']=9999;p.write_text(json.dumps(value))
         result=self.invoke();self.assertNotEqual(result.returncode,0);self.assertFalse(self.run.exists())
 
+    def test_subset_stages_exact_episodes_without_reusing_prior_batch(self):
+        self.assertEqual(self.invoke().returncode,0)
+        prior=self.run/'pulled/prepared/episodes'
+        for ep in range(30):
+            episode=prior/f'ep{ep:02d}';(episode/'.stages').mkdir(parents=True)
+            (episode/'result.json').write_text('{"status":"SUCCESS"}')
+            (episode/'.stages/05_object.done.json').write_text('prior stage')
+            (episode/'initializers.pth').write_text('prior reconstruction')
+        before={p.relative_to(self.run):(p.read_bytes(),p.stat().st_ino) for p in self.run.rglob('*') if p.is_file()}
+        ids=['ep02','ep03','ep04','ep07','ep11','ep13','ep15','ep16','ep17','ep19','ep27']
+        target=self.base/'rerun11'
+        result=self.invoke(target,'--episodes',*reversed(ids));self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        plan=json.loads((target/'payload/plan.json').read_text())
+        self.assertEqual([r['sequence'] for r in plan['episodes']],ids)
+        self.assertEqual([r['episode'] for r in plan['episodes']],[2,3,4,7,11,13,15,16,17,19,27])
+        self.assertEqual([r['native_sequence'] for r in json.loads((target/'bridge_plan.json').read_text())['episodes']],ids)
+        self.assertEqual([r['episode'] for r in json.loads((target/'prompt_sanity.json').read_text())],[2,3,4,7,11,13,15,16,17,19,27])
+        upload=(target/'upload.list').read_text().splitlines()
+        self.assertEqual([Path(p).name for p in upload if p.endswith('.mp4')],[f'episode_{ep:06d}.mp4' for ep in (2,3,4,7,11,13,15,16,17,19,27)])
+        self.assertEqual([Path(p).stem for p in upload if p.startswith('data/tier3_bridge/prompts/')],ids)
+        self.assertEqual({p.relative_to(target).as_posix() for p in target.rglob('*') if p.is_file()},
+                         {'entry.sh','upload.list','prompt_sanity.json','bridge_plan.json','payload/plan.json','payload/upload.json'})
+        self.assertFalse(any(p.is_symlink() for p in target.rglob('*')))
+        self.assertEqual({p.relative_to(self.run):(p.read_bytes(),p.stat().st_ino) for p in self.run.rglob('*') if p.is_file()},before)
+        result=self.invoke(target,'--episodes',*ids);self.assertNotEqual(result.returncode,0)
+        self.assertIn('choose a fresh run directory',result.stderr)
+
+    def test_subset_refuses_unknown_duplicate_and_unapproved_ep18(self):
+        result=self.invoke(self.base/'valid','--episodes','ep02');self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        for number,ids in enumerate((['ep02','ep30'],['ep2'],['ep02','ep02'],['ep18'])):
+            with self.subTest(ids=ids):
+                target=self.base/f'invalid{number}'
+                result=self.invoke(target,'--episodes',*ids);self.assertNotEqual(result.returncode,0)
+                self.assertIn('unknown/duplicate episode ids',result.stderr);self.assertFalse(target.exists())
+        target=self.base/'include18'
+        result=self.invoke(target,'--episodes','ep18','--include18');self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertEqual([r['episode'] for r in json.loads((target/'payload/plan.json').read_text())['episodes']],[18])
+
+    def test_subset_refuses_restore_before_creating_output(self):
+        self.assertEqual(self.invoke().returncode,0)
+        (self.run/'STOPPED').write_text('finished');(self.run/'QUIESCED').write_text('writers stopped')
+        artifact=self.run/'pulled/prepared/episodes/ep00/result.json';artifact.parent.mkdir(parents=True);artifact.write_text('{"status":"SUCCESS"}')
+        target=self.base/'replacement/prepared'
+        result=self.invoke(target,'--episodes','ep02','--restore-from',str(self.run))
+        self.assertNotEqual(result.returncode,0);self.assertIn('--episodes requires fresh roots',result.stderr)
+        self.assertFalse(target.exists());self.assertEqual(artifact.read_text(),'{"status":"SUCCESS"}')
+
     def test_replacement_preserves_remote_basename_and_hardlinks_only_completed_backup(self):
         self.assertEqual(self.invoke().returncode,0)
         (self.run/'STOPPED').write_text('finished');(self.run/'QUIESCED').write_text('writers stopped')

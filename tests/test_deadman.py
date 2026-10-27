@@ -27,7 +27,7 @@ class Api(http.server.BaseHTTPRequestHandler):
         self.send_response(self.server.statuses.pop(0) if self.server.statuses else 200)
         self.send_header('Content-Type', 'application/json')
         self.end_headers()
-        self.wfile.write(b'{"success": true}')
+        self.wfile.write(self.server.bodies.pop(0) if self.server.bodies else b'{"success": true}')
 
     def log_message(self, *args):
         pass
@@ -43,7 +43,7 @@ class DeadmanTests(unittest.TestCase):
         (tools / 'flock').write_text(LOCKER)
         (tools / 'flock').chmod(0o755)
         self.server = http.server.ThreadingHTTPServer(('127.0.0.1', 0), Api)
-        self.server.requests, self.server.statuses = [], []
+        self.server.requests, self.server.statuses, self.server.bodies = [], [], []
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
@@ -119,6 +119,15 @@ class DeadmanTests(unittest.TestCase):
         self.assertEqual(deadman.returncode, 0)
         self.assertEqual(self.server.requests, [self.stop_request()] * 2)
         self.assertIn('stop failed (deadline', output)
+
+    def test_ok_reply_without_explicit_success_is_retried(self):
+        self.server.bodies.extend([b'{}', b'{"success": false, "msg": "busy"}'])
+        self.arm(time.time() - 1, 5400)
+        deadman = self.start()
+        output, _ = deadman.communicate(timeout=10)
+        self.assertEqual(deadman.returncode, 0)
+        self.assertEqual(self.server.requests, [self.stop_request()] * 3)
+        self.assertEqual(output.count('stop failed (deadline'), 2)
 
     def test_missing_instance_identity_disarms_loudly(self):
         self.arm(time.time() - 1, 5400)

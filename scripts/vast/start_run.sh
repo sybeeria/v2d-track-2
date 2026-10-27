@@ -48,10 +48,27 @@ else:
     locks = [locked(d / '.watchdog.lock'), locked(Path('data/vast-controller-locks') / f'{instance}.lock', bind=True)]
     if (d / 'host').exists() and (d / 'host').read_text().split()[0] != instance and not (d / 'STOPPED').exists():
         sys.exit('previous instance has no completed stop; use a distinct run directory')
-    info = json.loads(subprocess.check_output(['vastai', 'show', 'instance', instance, '--raw'], text=True, timeout=120))
-    host = (info.get('public_ipaddr') or '').strip()
-    ports = (info.get('ports') or {}).get('22/tcp') or []
-    port = ports[0]['HostPort'] if ports else ''
+    lookup_failed = False
+    previous = (d / 'host').read_text().split() if (d / 'host').exists() else []
+    host, port = (previous[1:3] if len(previous) == 3 and previous[0] == instance else ('', ''))
+    try:
+        info = json.loads(subprocess.check_output(['vastai', 'show', 'instance', instance, '--raw'],
+            text=True, stderr=subprocess.PIPE, timeout=120))
+        if not isinstance(info, dict) or not {'start_date', 'dph_total'}.issubset(info): raise ValueError
+        next_host = (info.get('public_ipaddr') or '').strip()
+        ports = (info.get('ports') or {}).get('22/tcp') or []
+        next_port = str(ports[0]['HostPort']) if ports else ''
+        if not next_host or any(c.isspace() for c in next_host) or not next_port.isdecimal() or not 0 < int(next_port) < 65536:
+            raise ValueError
+        start, rate = float(info['start_date']), float(info['dph_total'])
+        if not all(math.isfinite(x) and x > 0 for x in (start, rate)): raise ValueError
+        metadata = d / 'instance-metadata.json'
+        temporary = metadata.with_suffix('.tmp')
+        temporary.write_text(json.dumps({'instance':instance, 'start_date':start, 'dph_total':rate}) + '\n')
+        temporary.replace(metadata)
+        host, port = next_host, next_port
+    except (OSError, subprocess.SubprocessError, ValueError, TypeError, AttributeError, KeyError, IndexError):
+        lookup_failed = True
     (d / 'host').write_text(f'{instance} {host} {port}\n')
     for name in ('STOPPED', 'BACKUP_FAILED', 'QUIESCED'):
         (d / name).unlink(missing_ok=True)
@@ -65,6 +82,8 @@ else:
     (d / 'controller-watchdog.pid').write_text(f'{pid}\n')
     record = {'instance': instance, 'cap': cap, 'floor': floor, 'pid': pid, 'log_offset': offset}
     temporary = pending.with_suffix('.tmp'); temporary.write_text(json.dumps(record)); temporary.replace(pending)
+    if lookup_failed:
+        sys.exit(f'cannot read instance {instance} from Vast; no launch started; watchdog recovery active')
 
 end = time.monotonic() + 60
 while True:

@@ -1,30 +1,42 @@
 """Connected production rehearsal (brainstorm 6 PROD-READY): fakes only at the GPU and provider boundaries."""
 import hashlib,json,os,shutil,signal,subprocess,sys,tempfile,time,unittest
 from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parents[2]))
 import pandas as pd
 import numpy as np
 from .fixture import Fixture,BASE,HERE,wait,sha,put
+from tests.test_pipeline_b8 import EXPORT_SHA,EXPORT_URL
 
 class ProductionChain(unittest.TestCase):
     def setUp(self):
         self.temp=tempfile.TemporaryDirectory(prefix='journey-',dir='/tmp');self.addCleanup(self.temp.cleanup)
         self.f=Fixture(Path(self.temp.name));self.addCleanup(self.f.stop_box)
+        record=self.f.work/'export-commit';record.write_text(EXPORT_SHA+' changed_files=0\n')
+        self.f.env['LAUNCH_COMMIT']=str(record)
     def tool(self,args,ok=True,env=None):
         command=[sys.executable,'-B',str(self.f.remote/'scripts/production_repeats.py'),*args]
         r=self.f.command(command,env,timeout=90)
         if ok:self.assertEqual(r.returncode,0,r.stdout+r.stderr)
         else:self.assertNotEqual(r.returncode,0,r.stdout)
         return r
-    def stage_cohort(self,run,tier,name,k=None):
+    def stage_cohort(self,run,tier,name,k=None,ok=True):
         out=run/name
         args=['prepare','--jobs',str(run/'jobs.txt'),'--manifest',str(self.f.remote/f'data/fixture/manifest{tier}.json'),
               '--source',str(self.f.remote/'runs'/run.name),'--tier-root',str(self.f.remote/'data/challenge/track_2'/('tier_1_multiview_caption' if tier==1 else 'tier_2_synthetic_noise')),
               '--tier',str(tier),'--out',str(out)]
         if k is not None:args+=['--k',str(k)]
-        self.tool(args);return out
+        self.tool(args,ok=ok);return out
     def test_connected_launch_pull_preempt_restore_repeat_and_three_export_routes(self):
         for tier in [1,2,3]:
             run,label,arm=self.f.run_spec(tier,f'tier{tier}')
+            # Match the production archive keys instead of the transport fixture's alternate work path.
+            source_work=run/f'payload/data/fixture/tier{tier}/sequences';work=run/f'payload/data/work/tier{tier}'
+            work.mkdir(parents=True);source_work.rename(work/'sequences')
+            manifest=run/f'payload/data/fixture/manifest{tier}.json'
+            content=json.loads(manifest.read_text())
+            for entry in content['sequences']:entry['frames']=10
+            manifest.write_text(json.dumps(content))
+            pre=run/'pre.sh';pre.write_text(pre.read_text().replace(f'data/fixture/tier{tier}',f'data/work/tier{tier}'))
             if tier==1:
                 ready=self.f.home/'checkpoint-ready'
                 self.f.launch(run,{'GPU_INTERRUPT':str(ready)})
@@ -86,13 +98,20 @@ class ProductionChain(unittest.TestCase):
             released='tier_1_multiview_caption' if tier==1 else 'tier_2_synthetic_noise'
             self.tool(['merge','--cohort',str(out),'--cohort',str(out),'--tier-root',str(self.f.remote/'data/challenge/track_2'/released),'--out',str(run/'duplicate-release')],ok=False)
             self.tool(['merge','--cohort',str(out),'--tier-root',str(self.f.remote/'data/challenge/track_2'/released),'--out',str(merged)])
+            export_work=self.f.remote/f'data/work/tier{tier}'
+            if tier==3:
+                plan=json.loads((merged/'plan.json').read_text())
+                records={entry['sequence']:{'poses_sha256':sha(export_work/'sequences'/entry['sequence']/'poses.npy'),
+                    'reference_sha256':next(iter(entry['arms'].values()))['training_reference']['sha256']}
+                    for entry in content['sequences']}
+                put(export_work/'work_manifest.json',json.dumps({'manifest_sha256':plan['manifest_sha256'],'sequences':records}))
             env={}
             if tier!=1:
                 guard=self.f.work/'guard';guard.mkdir(exist_ok=True)
                 put(guard/'sitecustomize.py',"import sys\nfrom pathlib import Path\nimport pyarrow.parquet as pq\ndef check(path):\n if isinstance(path,(str,bytes,Path)):\n  p=Path(path.decode() if isinstance(path,bytes) else path)\n  if any('tier_1' in s or s=='baseline' for s in p.parts) or p.name=='pack_submission.py':raise PermissionError('hard-tier clean read')\ndef audit(event,args):\n if event=='open':check(args[0])\nsys.addaudithook(audit)\noriginal_file,original_read=pq.ParquetFile,pq.read_table\ndef parquet_file(source,*a,**k):\n check(source);return original_file(source,*a,**k)\ndef read_table(source,*a,**k):\n check(source);return original_read(source,*a,**k)\npq.ParquetFile,pq.read_table=parquet_file,read_table\nfor callback in [lambda:open('/absent/tier_1_multiview_caption/a.parquet'),lambda:pq.ParquetFile('/absent/tier_1_multiview_caption/a.parquet'),lambda:open('/absent/pack_submission.py')]:\n try:callback()\n except PermissionError:pass\n else:raise AssertionError('clean-read guard ineffective')\n")
                 env={'PYTHONPATH':str(guard)}
             export_command=[sys.executable,'-B',str(self.f.remote/'scripts/production_repeats.py'),'export','--out',str(merged),
-                            '--work',str(self.f.remote/f'data/fixture/tier{tier}'),'--commit','https://github.com/fixture/fixture/commit/0123456789abcdef']
+                            '--work',str(export_work),'--commit',EXPORT_URL]
             attempts=[subprocess.Popen(export_command,cwd=self.f.controller,env={**self.f.env,**env},stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True) for _ in range(2)]
             try:
                 outputs=[p.communicate(timeout=90) for p in attempts]
@@ -112,16 +131,17 @@ class ProductionChain(unittest.TestCase):
             kit=self.f.remote/'external/kit/v2d_submission_kit';manifest=json.loads((kit/'KIT_MANIFEST.json').read_text())['files']
             for path in ['tools/pack_submission.py','submit/v2d_submit.py']:self.assertEqual(sha(kit/path),manifest[path])
             self.assertEqual(set(frame.packer_script_sha256),{sha(self.f.remote/'scripts/pack_no_clean.py')})
-            again=self.tool(['export','--out',str(merged),'--work',str(self.f.remote/f'data/fixture/tier{tier}'),'--commit','https://github.com/fixture/fixture/commit/0123456789abcdef'],ok=False)
+            again=self.tool(['export','--out',str(merged),'--work',str(export_work),'--commit',EXPORT_URL],ok=False)
             self.assertIn('export already attempted',again.stderr)
             print(f'CHAIN tier{tier}: exact default k=3 -> frozen map -> one fresh export -> real packer -> offline validator; 20 fixture rows')
             if tier==2:
-                # Fixed k=5 is supported; one missing result blocks qualification without new evaluations.
-                five=self.stage_cohort(run,tier,'k5',k=5);self.tool(['run','--out',str(five)])
-                self.assertEqual(len(list(five.rglob('trajectory.parquet'))),10)
-                missing=next(five.rglob('trajectory.parquet'));retained=missing.read_bytes();missing.unlink()
-                self.tool(['qualify','--out',str(five)],ok=False);self.assertFalse((five/'selected.json').exists());missing.write_bytes(retained)
-                self.tool(['qualify','--out',str(five)])
+                # k is frozen at 3; one missing result blocks qualification without new evaluations.
+                five=self.stage_cohort(run,tier,'k5',k=5,ok=False);self.assertFalse(five.exists())
+                again=self.stage_cohort(run,tier,'k3-missing');self.tool(['run','--out',str(again)])
+                self.assertEqual(len(list(again.rglob('trajectory.parquet'))),6)
+                missing=next(again.rglob('trajectory.parquet'));retained=missing.read_bytes();missing.unlink()
+                self.tool(['qualify','--out',str(again)],ok=False);self.assertFalse((again/'selected.json').exists());missing.write_bytes(retained)
+                self.tool(['qualify','--out',str(again)])
                 veto=self.stage_cohort(run,tier,'veto',k=3);self.tool(['run','--out',str(veto)],env={'GPU_BAD_REPEAT':'02'})
                 self.tool(['qualify','--out',str(veto)])
                 # A veto keeps coverage: same final map, failure status recorded, catastrophes first in the reseed queue.
@@ -140,7 +160,7 @@ class ProductionChain(unittest.TestCase):
                 self.assertEqual(json.loads((retained/'selected.json').read_text()),selected)
                 self.assertEqual(json.loads((retained/'veto.json').read_text())['episodes'],
                                  {e:{'original':'catastrophe','final':'catastrophe'} for e in ['0','1']})
-                print('GATES k=5 exact count; missing member fails; one bad of k=3 vetoes but keeps coverage; re-evaluation cannot rescue; zero training')
+                print('GATES k=5 refused; missing member fails; one bad of k=3 vetoes but keeps coverage; re-evaluation cannot rescue; zero training')
 
 class RepeatInterface(unittest.TestCase):
     def test_hard_tier_refuses_tier1_before_open(self):

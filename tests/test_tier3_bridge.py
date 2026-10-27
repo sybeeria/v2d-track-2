@@ -218,6 +218,8 @@ class NativePatchTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);dest=root/'v2d_sam2/lib';dest.mkdir(parents=True)
             shutil.copyfile(source,dest/'sam2_utils.py')
+            prep='v2d_cari4d/lib/cari4d/prep/run_foundationpose_mhr_export.py';(root/prep).parent.mkdir(parents=True)
+            shutil.copyfile(source.parents[2]/prep,root/prep)
             for _ in range(2):
                 result=subprocess.run([sys.executable,'-I',str(ROOT/'scripts/tier3_native/apply_native_patches.py')],env={**os.environ,'NATIVE_MODULES':str(root)},capture_output=True,text=True)
                 self.assertEqual(result.returncode,0,result.stderr)

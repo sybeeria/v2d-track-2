@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Usage (on the GPU box, armed by scripts/vast/watchdog.sh): deadman.sh NAME
 # Box-side backstop for the Mac watchdog, which stops enforcing anything when the Mac sleeps or its Vast session
-# expires. /workspace/NAME.deadline holds "DEADLINE_EPOCH GRACE_SECONDS", rewritten at the start of every watchdog pull. Every
+# expires. /workspace/NAME.deadline holds "DEADLINE_EPOCH GRACE_SECONDS", rewritten at the start of every watchdog pull
+# (the deadline becomes "now" when Vast refuses the watchdog's destroy request). Every
 # minute: once the deadline has passed, or once /workspace/NAME.sh is not running and no watchdog cycle has rewritten
 # the deadline for GRACE_SECONDS (0 = never), it asks Vast to stop this instance with the per-instance
 # CONTAINER_API_KEY. A live watchdog may still be pulling a finished box, so idleness alone never stops it.
@@ -25,7 +26,8 @@ request = urllib.request.Request(sys.argv[1], method='PUT', data=json.dumps({'st
                                           'Content-Type': 'application/json'})
 with urllib.request.urlopen(request, timeout=30) as response:
     body = json.loads(response.read() or b'{}')
-sys.exit(0 if body.get('success', True) else 1)
+sys.exit(0 if body.get('success') is True else 1)  # the CLI also counts only an explicit success
+
 PYSTOP
 }
 trap 'rm -f "$ws/$name.deadman.ready"' EXIT

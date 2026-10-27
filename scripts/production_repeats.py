@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Frozen fresh evaluation cohorts, whole-checkpoint selection, and a fixed fresh export.
 
-prepare -> run -> qualify. A failed/missing member blocks qualification; retrying a failed
-cohort requires a new declared experiment, never an automatic score-based reroll.
+prepare -> run -> qualify, always k=3. A Tier 2/3 member whose evaluation ran and failed (its runner finished
+without sealing it) is a catastrophe only with matching attempt custody; missing attempts, or any failed Tier 1 member, block
+qualification. Retrying requires a new declared experiment, never an automatic score-based reroll.
 Tier 2/3 own-input vetoes do not block coverage: a vetoed episode keeps its final with failure status
 (veto.json); merge --rescue moves it to a newly trained checkpoint only if that one's veto class is strictly
 better (pass < orientation-only < catastrophe), earliest --rescue first.
@@ -14,7 +15,7 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'scripts'))
 from prepare_repeats import prepare
 from pilot_queue import read_arms, read_inputs, evaluator_identity, checked_record
-from score_rollout import score_rollout, load_reference, load_rollout, write_json
+from score_rollout import score_rollout, load_reference, load_rollout, write_json, metric_modules
 import numpy as np
 
 
@@ -31,11 +32,11 @@ def write(p,value):write_json(p,value)
 def invoke(cmd,env=None):subprocess.run(cmd,cwd=ROOT,env={**os.environ,**(env or {})},check=True)
 
 def stage(args):
-    if args.k<1:raise ValueError('k must be positive')
+    if args.k!=3:raise ValueError('production requires the frozen k=3')
     if args.ep18:
         from ep18_pilot import validate_jobs
         validate_jobs(args.jobs)
-        if args.tier!=3 or args.k!=3:raise ValueError('ep18 requires Tier 3 and exactly k=3')
+        if args.tier!=3:raise ValueError('ep18 requires Tier 3')
     if args.out.exists():raise ValueError('cohort root must be fresh; retained attempts cannot be overwritten')
     candidates=[]
     for line in args.jobs.read_text().splitlines():
@@ -105,6 +106,7 @@ def stage(args):
 
 def checked_plan(root):
     plan=json.loads((root/'plan.json').read_text())
+    if plan['repeats']!=3:raise ValueError('production requires the frozen k=3')
     if digest(plan['manifest'])!=plan['manifest_sha256']:raise ValueError('frozen manifest changed')
     if any(digest(path)!=h for path,h in plan.get('input_manifests',{}).items()):
         raise ValueError('frozen parent manifest changed')
@@ -117,53 +119,94 @@ def sequence_inputs(entry):
             sorted(asset['sha256'] for asset in entry.get('assets',[])))
 
 def regular_member(root,path):
-    if path.resolve()!=root.resolve()/path.relative_to(root) or path.stat().st_nlink!=1:
+    if not path.is_file() or path.resolve()!=root.resolve()/path.relative_to(root) or path.stat().st_nlink!=1:
         raise ValueError('separate regular cohort artifacts required')
+
+def checked_attempt(root,result,identity):
+    attempt=result/'evaluation.attempt.json'
+    if not attempt.exists() and not attempt.is_symlink():return False
+    regular_member(root,attempt)
+    if json.loads(attempt.read_text())!=identity:raise ValueError('checkpoint/runtime/input attempt provenance mismatch')
+    return True
+
+def failed_member(member,result,c,step):
+    # pilot_queue creates result before exec; only the evaluator's Hydra startup writes this config.
+    startup=result/'hydra/.hydra/config.yaml'
+    if ((result/'evaluation.done.json').exists() or not startup.is_file() or not startup.stat().st_size
+        or not (member/'summary.json').is_file()):return False
+    regular_member(member,startup)
+    rows=json.loads((member/'summary.json').read_text())['candidates']
+    return not any((r['arm'],r['input'],r['sequence'],r['step'])==(c['arm'],c['input'],c['sequence'],step) for r in rows)
 
 def execute(args):
     plan=checked_plan(args.out)
     if (args.out/'RUN_STARTED').exists():raise ValueError('cohort already attempted; retain it, diagnose failure')
     with (args.out/'RUN_STARTED').open('x') as claim:claim.write('evaluate-only cohort attempt\n')
-    invoke(['bash',str(ROOT/'scripts/test_day.sh'),str(args.gpus),str(args.out/'cohort')],
-           {'PILOT_EVALUATE_ONLY':'1','JOBS_FILE':str(args.out/'jobs-cohort.txt'),'MANIFEST':plan['manifest']})
-    (args.out/'RUN_COMPLETE').touch()
+    # test_day attempts every member even after one fails; qualify classifies each member from its own receipts.
+    try:invoke(['bash',str(ROOT/'scripts/test_day.sh'),str(args.gpus),str(args.out/'cohort')],
+               {'PILOT_EVALUATE_ONLY':'1','JOBS_FILE':str(args.out/'jobs-cohort.txt'),'MANIFEST':plan['manifest']});status=0
+    except subprocess.CalledProcessError as error:status=error.returncode
+    (args.out/'RUN_COMPLETE').write_text(f'test_day exit {status}\n')
 
 def qualify(args):
     plan=checked_plan(args.out)
     if plan['ep18']:
         qualify_ep18(args.out,plan);return
     if not (args.out/'RUN_COMPLETE').exists():raise ValueError('cohort not completely executed')
-    checked={r['name']:r for r in json.loads((args.out/'preparation.json').read_text())['checked']}
+    preparation=json.loads((args.out/'preparation.json').read_text())
+    checked={r['name']:r for r in preparation['checked']}
+    if plan['evaluator']!=preparation['plan']['evaluator']:raise ValueError('prepared evaluator changed')
+    output_errors=(ValueError,KeyError,TypeError,*(m.ParticipantVisibleError for m in metric_modules().values()))
     actual={p.resolve() for p in (args.out/'cohort').rglob('trajectory.parquet')}
     expected=set();mapping={};summary=[];vetoes=[]
     for c in plan['candidates']:
-        values={step:[] for step in c['steps']};members=[]
+        values={step:[] for step in c['steps']};members=[];unrecorded=[]
         for repeat in range(1,plan['repeats']+1):
-            base=args.out/'cohort'/f"{c['name']}-r{repeat:02d}"/c['arm']/c['input']
+            member=args.out/'cohort'/f"{c['name']}-r{repeat:02d}";base=member/c['arm']/c['input']
             for step in c['steps']:
                 result=base/'evaluation'/c['sequence']/str(step)
-                trajectory=result/'trajectory.parquet';regular_member(args.out,trajectory);expected.add(trajectory.resolve())
+                trajectory=result/'trajectory.parquet'
                 checkpoint=base/'train'/c['sequence']/f'policy_{step}.safetensors'
-                done=json.loads((result/'evaluation.done.json').read_text());metrics=json.loads((result/'metrics.json').read_text())
+                checkpoint_hash=digest(checkpoint)
+                if checkpoint_hash!=checked[c['name']]['checkpoint_sha256'][str(step)]:raise ValueError('prepared checkpoint changed')
                 job=read_inputs(Path(plan['manifest']),[c['sequence']],[c['input']])[f"{c['input']}/{c['sequence']}"]
-                identity={'checkpoint_sha256':digest(checkpoint),'evaluator':plan['evaluator'],'input':c['input'],
-                          'training_reference':job['training'],'scoring_reference':job['scoring'],'support':job['support'],
-                          'trajectory_sha256':digest(trajectory),'metrics_sha256':digest(result/'metrics.json')}
-                if done!=identity or done['checkpoint_sha256']!=checked[c['name']]['checkpoint_sha256'][str(step)]:
+                identity={'checkpoint_sha256':checkpoint_hash,'evaluator':plan['evaluator'],'input':c['input'],
+                          'training_reference':job['training'],'scoring_reference':job['scoring'],'support':job['support']}
+                if trajectory.exists():regular_member(args.out,trajectory);expected.add(trajectory.resolve())
+                if failed_member(member,result,c,step):
+                    if plan['tier']==1:raise ValueError(f'{result}: evaluation failed; Tier 1 has no failure class')
+                    if not checked_attempt(args.out,result,identity):unrecorded.append((len(members),result))
+                    members.append({'repeat':repeat,'failed':True,'catastrophe':True,'orientation':False})
+                    values[step].append(None)
+                    continue
+                if not (result/'evaluation.done.json').exists():raise ValueError(f'{result}: evaluation never completed; cohort incomplete')
+                regular_member(args.out,trajectory);expected.add(trajectory.resolve())
+                done=json.loads((result/'evaluation.done.json').read_text())
+                if done!={**identity,'trajectory_sha256':digest(trajectory),'metrics_sha256':digest(result/'metrics.json')}:
                     raise ValueError('checkpoint/runtime/input provenance mismatch')
-                if (metrics.get('checkpoint_sha256')!=done['checkpoint_sha256'] or metrics.get('world_count')!=1
-                    or metrics.get('reset_mode')!='explicit' or metrics.get('environment_steps')!=step
-                    or metrics.get('non_finite_worlds')!=[]):raise ValueError('invalid evaluator protocol')
-                # Re-read the retained achieved trajectory; never trust an editable summary alone.
-                report=score_rollout(trajectory,Path(job['scoring']['path']),
-                                     Path(checked_record(c['scoring_mesh'])['path']) if plan['tier']==1 else None,
-                                     episode_index=c['episode'] if plan['tier']==1 else None)
-                if not all(math.isfinite(v) for v in report['metrics'].values()):raise ValueError('non-finite score')
-                mean=report['metrics']
+                try:metrics=json.loads((result/'metrics.json').read_text())
+                except ValueError:metrics=None
+                if isinstance(metrics,dict) and (metrics.get('checkpoint_sha256')!=done['checkpoint_sha256'] or metrics.get('world_count')!=1
+                    or metrics.get('reset_mode')!='explicit' or metrics.get('environment_steps')!=step):raise ValueError('invalid evaluator protocol')
+                mesh=Path(checked_record(c['scoring_mesh'])['path']) if plan['tier']==1 else None
+                if plan['tier']!=1:reference,_,_,body=load_reference(Path(job['training']['path']))
+                # Custody and reference validation stay outside the output-failure boundary.
+                try:
+                    if not isinstance(metrics,dict) or metrics.get('non_finite_worlds')!=[]:raise ValueError('invalid evaluator output')
+                    json.dumps(metrics,allow_nan=False)
+                    report=score_rollout(trajectory,Path(job['scoring']['path']),mesh,
+                                         episode_index=c['episode'] if plan['tier']==1 else None)
+                    if not all(math.isfinite(v) for v in report['metrics'].values()):raise ValueError('non-finite score')
+                    mean=report['metrics']
+                    if plan['tier']!=1:achieved=load_rollout(trajectory,len(reference),body)
+                except output_errors as error:
+                    if plan['tier']==1:raise ValueError(f'{result}: evaluation failed; Tier 1 has no failure class') from error
+                    if not checked_attempt(args.out,result,identity):unrecorded.append((len(members),result))
+                    members.append({'repeat':repeat,'failed':True,'catastrophe':True,'orientation':False})
+                    values[step].append(None)
+                    continue
                 if plan['tier']!=1:
                     limit=10 if plan['tier']==3 else 15  # Tier 3 protocol: self-MPPE <=10 cm (T3-POLICY PROTOCOL-qualified)
-                    reference,_,_,body=load_reference(Path(job['training']['path']))
-                    achieved=load_rollout(trajectory,len(reference),body)
                     q=reference[:,3:]/np.linalg.norm(reference[:,3:],axis=1,keepdims=True)
                     r=achieved[:,3:]/np.linalg.norm(achieved[:,3:],axis=1,keepdims=True)
                     tracking={'mean_position_m':float(np.linalg.norm(reference[:,:3]-achieved[:,:3],axis=1).mean()),
@@ -174,7 +217,11 @@ def qualify(args):
                                     'catastrophe':tracking['mean_position_m']>.1 or mean['MPPE']>limit,
                                     'orientation':tracking['mean_orientation_rad']>.5})
                 values[step].append({key:mean[key] for key in ('AUC','SP-SR','MP-SR','MPPE')})
-        means={step:sum(m['AUC'] for m in v)/len(v) for step,v in values.items()}
+        # Cohorts from before attempt records cannot show which runtime failed; such a failure may stand only when a
+        # sealed member already makes the candidate a catastrophe, so it changes neither its class nor the reseed order.
+        if unrecorded and not any(m['catastrophe'] for i,m in enumerate(members) if i not in dict(unrecorded)):
+            raise ValueError(f'{unrecorded[0][1]}: evaluation attempt missing; cohort incomplete')
+        means={step:None if None in v else sum(m['AUC'] for m in v)/len(v) for step,v in values.items()}
         chosen=tier1_choice(values,c['final_step']) if plan['tier']==1 else c['final_step']
         source=Path(plan['source_root'])/c['source'];checkpoint=source/c['input']/'train'/c['sequence']/f'policy_{chosen}.safetensors'
         mapping[str(c['episode'])]=str(checkpoint.resolve())
@@ -209,7 +256,7 @@ def bound_vetoes(cohort,selected,binding):
 def qualify_ep18(root,plan):
     import pyarrow.parquet as pq
     from ep18_pilot import PAIR
-    if plan['repeats']!=3 or {c['name'] for c in plan['candidates']}!=set(PAIR):
+    if {c['name'] for c in plan['candidates']}!=set(PAIR):
         raise ValueError('invalid registered ep18 cohort')
     checked={r['name']:r for r in json.loads((root/'preparation.json').read_text())['checked']}
     results=[];expected=set()
@@ -333,6 +380,26 @@ def merge(args):
     write(args.out/'plan.json',{**plan,'source_root':str(ROOT/'runs'),'parents':parents,'input_manifests':manifests})
 
 
+def checked_work(root,plan,work):
+    if plan['tier']==3:
+        from assemble_tier3_work import verify
+        verify(Path(plan['manifest']),ROOT/'data/challenge/track_2/tier_2_synthetic_noise',work)
+        return
+    expected={}
+    for parent in plan.get('parents',[{'cohort':str(root)}]):
+        member=checked_plan(Path(parent['cohort']))
+        frozen=json.loads((Path(member['source_root'])/'frozen-inputs/manifest.json').read_text())
+        if frozen['input_manifest_sha256']!=member['manifest_sha256']:
+            raise ValueError('frozen-inputs archive belongs to a different input manifest')
+        for entry in json.loads(Path(member['manifest']).read_text())['sequences']:
+            h=frozen['files'][f"data/work/tier{plan['tier']}/sequences/{entry['sequence']}/poses.npy"]
+            if expected.setdefault(entry['sequence'],h)!=h:raise ValueError('cohorts disagree on converter poses')
+    if not expected:raise ValueError('missing frozen converter poses')
+    for sequence,h in expected.items():
+        if digest(work/'sequences'/sequence/'poses.npy')!=h:
+            raise ValueError('export work differs from frozen converter poses: '+sequence)
+
+
 def export(args):
     from pack_no_clean import rs
     if not re.fullmatch(rs.CODE_COMMIT_PATTERN,args.commit):
@@ -348,6 +415,13 @@ def export(args):
         raise ValueError('evaluator/runtime changed after cohort')
     if digest(args.out/'selected.json')!=binding['selected_sha256'] or any(digest(p)!=h for p,h in binding['checkpoints'].items()):
         raise ValueError('frozen selection/checkpoint changed')
+    checked_work(args.out,plan,args.work)
+    # The export host has no .git; launch.sh records the clean commit it uploaded.
+    commit=args.commit.rstrip('/').rsplit('/',1)[-1].lower()
+    try:launched=Path(os.environ.get('LAUNCH_COMMIT',ROOT/'LAUNCH_COMMIT')).read_text().split()
+    except OSError as e:raise ValueError('missing clean launch commit record') from e
+    if not re.fullmatch('[0-9a-f]{40}',commit) or launched!=[commit,'changed_files=0']:
+        raise ValueError('code_commit_url must name the full clean launch commit uploaded to this host')
     if (args.out/'EXPORT_STARTED').exists() or (args.out/'export').exists():raise ValueError('export already attempted; retain predetermined attempt')
     with (args.out/'EXPORT_STARTED').open('x') as claim:claim.write('predetermined export attempt\n')
     invoke(['bash',str(ROOT/'scripts/eval_and_pack.sh'),f"tier{plan['tier']}",plan['source_root'],str(args.out/'export'),args.commit,str(args.work)],

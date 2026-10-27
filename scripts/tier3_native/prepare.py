@@ -66,7 +66,7 @@ def verify(run):
     return record
 
 
-def prepare(run, include18, prompt_review=None, restore_from=None):
+def prepare(run, include18, prompt_review=None, restore_from=None, episode_ids=None):
     if run.exists():
         raise FileExistsError('choose a fresh run directory')
     if not re.fullmatch(r'[A-Za-z0-9_-]+', run.name):
@@ -74,6 +74,12 @@ def prepare(run, include18, prompt_review=None, restore_from=None):
     inventory = json.loads((ROOT / PROMPTS / 'video_manifest.json').read_text())
     if len(inventory) != 30 or {v['episode'] for v in inventory} != set(range(30)):
         raise ValueError('expected exactly all 30 video records')
+    if episode_ids is not None:
+        available = {f"ep{v['episode']:02d}" for v in inventory if include18 or v['episode'] != 18}
+        if not episode_ids or len(set(episode_ids)) != len(episode_ids) or set(episode_ids) - available:
+            raise ValueError('unknown/duplicate episode ids; use ep00..ep29 (ep18 needs --include18)')
+        if restore_from:
+            raise ValueError('--episodes requires fresh roots; do not use --restore-from')
     # Project only asset locators. Task/caption text is never propagated or used.
     metadata = {v['episode_index']: {k: v[k] for k in ('sequence_id', 'mesh', 'ground_plane', 'support_surface')}
                 for v in map(json.loads, (ROOT / SCENE / 'meta/episodes_metadata.jsonl').read_text().splitlines())}
@@ -99,6 +105,8 @@ def prepare(run, include18, prompt_review=None, restore_from=None):
         files[rel.as_posix()] = digest(ROOT / rel)
         return str(REMOTE / rel)
     for v in sorted(inventory, key=lambda x: x['episode']):
+        if episode_ids is not None and f"ep{v['episode']:02d}" not in episode_ids:
+            continue
         ep = v['episode']; m = metadata[ep]
         video = SCENE / f'videos/chunk-000/observation.images.exo_camera/episode_{ep:06d}.mp4'
         prompts = reviewed.get(ep, PROMPTS / f'ep{ep:02d}.json')
@@ -175,11 +183,12 @@ def main():
     p.add_argument('run', type=Path)
     p.add_argument('--project', type=Path, default=ROOT)
     p.add_argument('--include18', action='store_true')
+    p.add_argument('--episodes', nargs='+', help='explicit ep00..ep29 subset, fresh roots only; ep18 needs --include18')
     p.add_argument('--prompt-review', type=Path)
     p.add_argument('--restore-from', type=Path)
     a = p.parse_args()
     ROOT = a.project.resolve()
-    print(json.dumps(prepare(a.run.resolve(), a.include18, a.prompt_review.resolve() if a.prompt_review else None, a.restore_from) if a.action == 'prepare' else {'verified_files': len(verify(a.run)['files'])}, indent=2))
+    print(json.dumps(prepare(a.run.resolve(), a.include18, a.prompt_review.resolve() if a.prompt_review else None, a.restore_from, a.episodes) if a.action == 'prepare' else {'verified_files': len(verify(a.run)['files'])}, indent=2))
 
 
 if __name__ == '__main__':

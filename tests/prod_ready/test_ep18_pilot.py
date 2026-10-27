@@ -173,7 +173,7 @@ class Ep18Pilot(unittest.TestCase):
 
     def test_unregistered_tier3_jobs_and_k_refused(self):
         run,result=self.stage('ep18-k5',['--k','5'],False)
-        self.assertIn('ep18 requires k=3',result.stderr); self.assertFalse(run.exists())
+        self.assertIn('production requires the frozen k=3',result.stderr); self.assertFalse(run.exists())
         wrong=self.f.work/'wrong.txt'
         wrong.write_text((self.f.controller/READY/'generated/tier3/jobs.GATED.txt').read_text().replace('49999872','40001536'))
         run,result=self.stage('ep18-wrong',ok=False,jobs=wrong)

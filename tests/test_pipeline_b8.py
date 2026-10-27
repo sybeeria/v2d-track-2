@@ -9,14 +9,63 @@ import sys
 import tempfile
 import unittest
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 import numpy as np
 import pyarrow.parquet as pq
 import trimesh
 from tests.test_score_rollout import write_reference, write_rollout
 
-ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT/'scripts/production_repeats.py'
 EARLY, FINAL, SHORT = 330012672, 349999104, 49999872
+EXPORT_SHA = '0123456789abcdef0123456789abcdef01234567'
+EXPORT_URL = 'https://github.com/fixture/fixture/commit/'+EXPORT_SHA
+sys.path.insert(0, str(ROOT/'scripts'))
+from pilot_queue import read_arms  # noqa: E402
+
+# Stands in for evaluate_policy.py behind the real test_day/pilot_queue runner. FAKE_NONFINITE reproduces the
+# t2h1 world_count=1 failure (the evaluator raises before writing outputs), FAKE_PARTIAL fails after writing only the
+# trajectory, and FAKE_KILL_RUNNER kills the member's runner.
+FAKE_EVALUATOR = '''import hashlib, json, os, signal, sys
+from pathlib import Path
+import numpy as np
+sys.path.insert(0, os.environ['FAKE_TESTS'])
+from test_score_rollout import write_rollout
+args = dict(a.split('=', 1) for a in sys.argv[2:])
+checkpoint = Path(args['evaluation.checkpoint'])
+member = checkpoint.parents[4].name
+hydra = Path(args['hydra.run.dir'])/'.hydra'
+hydra.mkdir(parents=True)
+(hydra/'config.yaml').write_text('evaluation:\\n  world_count: 1\\n')
+if member == os.environ.get('FAKE_NONFINITE') or os.environ.get('FAKE_FAIL_ALL'):
+    sys.exit('warning: 1 worlds recorded non-finite poses and are excluded\\n'
+             'ValueError: MPPE requires at least one frame, finite world, and object body')
+if member == os.environ.get('FAKE_KILL_RUNNER'):
+    os.kill(os.getppid(), signal.SIGKILL)
+    sys.exit(1)
+poses = np.tile([0., 0., 0., 0., 0., 0., 1.], (10, 1))
+fault = os.environ.get('FAKE_INVALID_OUTPUT') if member.endswith('-r03') else None
+if fault == 'nan': poses[0, 0] = float('nan')
+if fault == 'quaternion': poses[0, 3:] = 0.
+if fault == 'scorer': poses[0, 3:] = [0., 0., 0., 1e-10]
+write_rollout(Path(args['evaluation.object_trajectories_output']), poses)
+if fault == 'schema':
+    import pyarrow.parquet as pq
+    path = Path(args['evaluation.object_trajectories_output'])
+    table = pq.ParquetFile(path).read()
+    pq.write_table(table.replace_schema_metadata({}), path)
+if member == os.environ.get('FAKE_PARTIAL'):
+    sys.exit('evaluator crashed before writing metrics')
+Path(args['evaluation.metrics_output']).write_text(json.dumps({
+    'checkpoint_sha256': hashlib.sha256(checkpoint.read_bytes()).hexdigest(), 'world_count': 1,
+    'reset_mode': 'explicit', 'environment_steps': int(checkpoint.stem.split('_')[1]),
+    'non_finite_worlds': [0] if fault == 'metrics' else []}))
+if fault == 'metrics-json': Path(args['evaluation.metrics_output']).write_text('{')
+if fault == 'metrics-nan':
+    path = Path(args['evaluation.metrics_output'])
+    metrics = json.loads(path.read_text()); metrics['metrics'] = {'mppe_cm': float('nan')}
+    path.write_text(json.dumps(metrics))
+'''
 
 
 def sha(path):
@@ -38,10 +87,31 @@ class Pipeline(unittest.TestCase):
         self.poses = np.tile([0., 0., 0., 0., 0., 0., 1.], (10, 1))
         self.counter = 0
         self.supports = []
+        self.commit_record = self.work/'LAUNCH_COMMIT'
+        self.commit_record.write_text(EXPORT_SHA+' changed_files=0\n')
 
     def command(self, *args, env=None):
         return subprocess.run([sys.executable, '-B', str(SCRIPT), *map(str, args)], cwd=ROOT,
-            env={**os.environ, **(env or {})}, capture_output=True, text=True, timeout=90)
+            env={**os.environ, 'LAUNCH_COMMIT':str(self.commit_record), **(env or {})}, capture_output=True, text=True, timeout=90)
+
+    def frozen_work(self, cohort):
+        plan=json.loads((cohort/'plan.json').read_text())
+        work=self.work/'frozen';files={};records={}
+        for entry in json.loads(Path(plan['manifest']).read_text())['sequences']:
+            sequence=entry['sequence'];target=work/'sequences'/sequence/'poses.npy'
+            target.parent.mkdir(parents=True,exist_ok=True);np.save(target,np.tile(np.eye(4),(entry['frames'],1,1)))
+            files[f"data/work/tier{plan['tier']}/sequences/{sequence}/poses.npy"]=sha(target)
+            records[sequence]={'poses_sha256':sha(target),
+                'reference_sha256':next(iter(entry['arms'].values()))['training_reference']['sha256']}
+        if plan['tier']==3:
+            put(work/'work_manifest.json',{'manifest_sha256':plan['manifest_sha256'],'sequences':records})
+        else:
+            archive=Path(plan['source_root'])/'frozen-inputs'
+            for rel in files:
+                target=archive/'files'/rel;target.parent.mkdir(parents=True,exist_ok=True)
+                shutil.copyfile(work/'sequences'/Path(rel).parts[-2]/'poses.npy',target)
+            put(archive/'manifest.json',{'input_manifest_sha256':plan['manifest_sha256'],'files':files})
+        return work
 
     def roster(self, count):
         root = self.work/'roster'
@@ -100,7 +170,7 @@ class Pipeline(unittest.TestCase):
         self.assertEqual(result.returncode,0,result.stderr)
         return manifest
 
-    def cohort(self, episodes, tier=2, manifest=None, shifts=None, name=None):
+    def cohort(self, episodes, tier=2, manifest=None, shifts=None, name=None, evaluated=True):
         self.counter += 1
         name = name or f'cohort{self.counter}'
         manifest = manifest or self.manifest(episodes,tier,name)
@@ -116,7 +186,7 @@ class Pipeline(unittest.TestCase):
             sequence=f'seq{episode}'; label=next(iter(by_sequence[sequence]['arms']))
             job=f't{tier}-ep{episode:02d}'
             base=source/job/arm
-            put(base/'recipe.json',{'schema_version':2,'overrides':[],'references':{}})
+            put(base/'recipe.json',{'schema_version':2,'overrides':read_arms(ROOT/'scripts'/arms_file,steps)[arm][0],'references':{}})
             for step in steps:
                 checkpoint=base/label/'train'/sequence/f'policy_{step}.safetensors'
                 checkpoint.parent.mkdir(parents=True,exist_ok=True)
@@ -130,6 +200,7 @@ class Pipeline(unittest.TestCase):
         result=self.command('prepare','--jobs',jobs,'--manifest',manifest,'--source',source,
             '--tier-root',roster,'--tier',tier,'--out',cohort)
         self.assertEqual(result.returncode,0,result.stderr)
+        if not evaluated: return cohort
         plan=json.loads((cohort/'plan.json').read_text())
         for c in plan['candidates']:
             arm_record=by_sequence[c['sequence']]['arms'][c['input']]
@@ -170,6 +241,160 @@ class Pipeline(unittest.TestCase):
         for cohort in cohorts: args += ['--cohort',cohort]
         for cohort in rescues: args += ['--rescue',cohort]
         return self.command(*args)
+
+    def evaluator(self, **faults):
+        fake=self.work/'fake_evaluator'
+        fake.write_text(f'#!{sys.executable}\n'+FAKE_EVALUATOR);fake.chmod(0o755)
+        return {'PYTHON':str(fake),'PACK_PYTHON':sys.executable,'FAKE_TESTS':str(ROOT/'tests'),**faults}
+
+    def test_never_spawned_evaluator_leaves_the_cohort_incomplete(self):
+        self.roster(1)
+        for executable in ('missing','non-executable'):
+            with self.subTest(executable=executable):
+                cohort=self.cohort([0],evaluated=False)
+                python=self.work/executable
+                if executable=='non-executable': python.write_text('#!/bin/sh\nexit 1\n')
+                run=self.command('run','--out',cohort,env={'PYTHON':str(python),'PACK_PYTHON':sys.executable})
+                self.assertEqual(run.returncode,0,run.stderr)
+                self.assertEqual((cohort/'RUN_COMPLETE').read_text(),'test_day exit 1\n')
+                self.assertEqual(len(list(cohort.rglob('trajectory.parquet'))),0)
+                self.assertEqual(len(list(cohort.rglob('evaluation.done.json'))),0)
+                # Empty startup files are not evaluator-authored evidence either.
+                for result in (cohort/'cohort').glob('*/*/*/evaluation/*/*'):
+                    startup=result/'hydra/.hydra/config.yaml'
+                    startup.parent.mkdir(parents=True);startup.touch()
+                result=self.command('qualify','--out',cohort)
+                self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+                self.assertIn('never completed; cohort incomplete',result.stderr)
+                for name in ('selected.json','selection.json','veto.json','export-binding.json'):
+                    self.assertFalse((cohort/name).exists(),name)
+
+    def test_sealed_invalid_outputs_veto_hard_tiers_and_block_tier1(self):
+        self.roster(1)
+        for tier in (2,3,1):
+            for fault in ('nan','quaternion','schema','metrics'):
+                with self.subTest(tier=tier,fault=fault):
+                    self.check_invalid_output(tier,fault)
+
+    def test_scorer_rejection_is_an_output_failure(self):
+        self.roster(1)
+        for tier in (2,3,1):
+            with self.subTest(tier=tier):
+                self.check_invalid_output(tier,'scorer')
+
+    def test_sealed_invalid_metrics_are_output_failures(self):
+        self.roster(1)
+        for tier in (2,3,1):
+            for fault in ('metrics-json','metrics-nan'):
+                with self.subTest(tier=tier,fault=fault):
+                    self.check_invalid_output(tier,fault)
+
+    def check_invalid_output(self,tier,fault):
+        cohort=self.cohort([0],tier=tier,evaluated=False)
+        run=self.command('run','--out',cohort,env=self.evaluator(FAKE_INVALID_OUTPUT=fault))
+        self.assertEqual(run.returncode,0,run.stderr)
+        count=(6 if fault.startswith('metrics') else 5) if tier==1 else 3
+        self.assertEqual(len(list(cohort.rglob('evaluation.done.json'))),count)
+        before={str(p):sha(p) for p in cohort.rglob('trajectory.parquet')}
+        result=self.command('qualify','--out',cohort)
+        if tier==1:
+            self.assertEqual(result.returncode,1,result.stdout+result.stderr)
+            self.assertFalse((cohort/'selected.json').exists())
+            return
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(before,{str(p):sha(p) for p in cohort.rglob('trajectory.parquet')})
+        veto=json.loads((cohort/'veto.json').read_text())
+        self.assertEqual(veto['reseed_order'],[0])
+        candidate=veto['candidates'][0]
+        self.assertEqual(candidate['status'],'catastrophe')
+        self.assertEqual([m['catastrophe'] for m in candidate['members']],[False,False,True])
+        self.assertEqual(candidate['members'][2],{'repeat':3,'failed':True,'catastrophe':True,'orientation':False})
+        row=json.loads((cohort/'selection.json').read_text())[0]
+        self.assertEqual((row['selected_step'],row['members'],row['auc_means']),(SHORT,3,{str(SHORT):None}))
+        self.assertIsNone(row['member_metrics'][str(SHORT)][2])
+        plan=json.loads((cohort/'plan.json').read_text());c=plan['candidates'][0]
+        checkpoint=Path(plan['source_root'])/c['source']/c['input']/'train'/c['sequence']/f'policy_{SHORT}.safetensors'
+        selected={'0':str(checkpoint.resolve())}
+        self.assertEqual(json.loads((cohort/'selected.json').read_text()),selected)
+        binding=json.loads((cohort/'export-binding.json').read_text())
+        self.assertEqual(binding['checkpoints'],{selected['0']:sha(checkpoint)})
+
+    def test_evaluated_invalid_member_is_a_catastrophe_and_qualification_completes(self):
+        self.roster(1)
+        for fault in ('FAKE_NONFINITE','FAKE_PARTIAL'):
+            with self.subTest(fault=fault):
+                self.check_failed_member(fault)
+
+    def check_failed_member(self, fault):
+        cohort=self.cohort([0],evaluated=False)
+        run=self.command('run','--out',cohort,env=self.evaluator(**{fault:'t2-ep00-r03'}))
+        self.assertEqual(run.returncode,0,run.stderr)
+        self.assertEqual((cohort/'RUN_COMPLETE').read_text(),'test_day exit 1\n')
+        log=(cohort/'cohort/t2-ep00-r03.log').read_text()
+        self.assertIn('non-finite poses' if fault=='FAKE_NONFINITE' else 'crashed before writing metrics',log)
+        self.assertEqual(len(list(cohort.rglob('trajectory.parquet'))),2 if fault=='FAKE_NONFINITE' else 3)
+        result=self.command('qualify','--out',cohort)
+        self.assertEqual(result.returncode,0,result.stderr)
+        veto=json.loads((cohort/'veto.json').read_text())
+        self.assertEqual(veto['reseed_order'],[0])
+        self.assertEqual(veto['candidates'][0]['status'],'catastrophe')
+        members=veto['candidates'][0]['members']
+        self.assertEqual([m['catastrophe'] for m in members],[False,False,True])
+        self.assertEqual(members[2],{'repeat':3,'failed':True,'catastrophe':True,'orientation':False})
+        row=json.loads((cohort/'selection.json').read_text())[0]
+        self.assertEqual((row['selected_step'],row['members'],row['veto'],row['auc_means']),(SHORT,3,'catastrophe',{str(SHORT):None}))
+        valid={'AUC':1.0,'SP-SR':1.0,'MP-SR':1.0,'MPPE':0.0}
+        self.assertEqual(row['member_metrics'],{str(SHORT):[valid,valid,None]})
+        selected=json.loads((cohort/'selected.json').read_text())
+        self.assertEqual(selected,{'0':str((cohort.parent/f'source/t2-ep00/T2C-contact/raw_repaired/train/seq0/policy_{SHORT}.safetensors').resolve())})
+
+    def test_member_whose_runner_died_leaves_the_cohort_incomplete(self):
+        self.roster(1)
+        cohort=self.cohort([0],evaluated=False)
+        run=self.command('run','--out',cohort,env=self.evaluator(FAKE_KILL_RUNNER='t2-ep00-r03'))
+        self.assertEqual(run.returncode,0,run.stderr)
+        self.assertEqual(len(list(cohort.rglob('trajectory.parquet'))),2)
+        result=self.command('qualify','--out',cohort)
+        self.assertNotEqual(result.returncode,0,result.stdout)
+        self.assertIn('t2-ep00-r03',result.stderr)
+        self.assertIn('never completed; cohort incomplete',result.stderr)
+        for name in ('selected.json','selection.json','veto.json','export-binding.json'):
+            self.assertFalse((cohort/name).exists(),name)
+
+    def test_tier1_failed_member_is_not_qualified(self):
+        self.roster(1)
+        cohort=self.cohort([0],tier=1,evaluated=False)
+        run=self.command('run','--out',cohort,env=self.evaluator(FAKE_NONFINITE='t1-ep00-r02'))
+        self.assertEqual(run.returncode,0,run.stderr)
+        result=self.command('qualify','--out',cohort)
+        self.assertNotEqual(result.returncode,0,result.stdout)
+        self.assertIn('Tier 1 has no failure class',result.stderr)
+        self.assertFalse((cohort/'selected.json').exists())
+
+    def test_production_cohorts_require_k3(self):
+        self.roster(1)
+        cohort=self.qualified([0])
+        plan=json.loads((cohort/'plan.json').read_text())
+        for k in (1,5):
+            out=self.work/f'k{k}'
+            result=self.command('prepare','--jobs',cohort.parent/'jobs.txt','--manifest',plan['manifest'],'--source',plan['source_root'],
+                '--tier-root',self.work/'roster','--tier',2,'--k',k,'--out',out)
+            self.assertNotEqual(result.returncode,0,result.stdout)
+            self.assertIn('production requires the frozen k=3',result.stderr)
+            self.assertFalse(out.exists())
+        # Cohorts retained from before the guard: a one-member cohort cannot qualify, a qualified one cannot merge.
+        single=self.cohort([0])
+        retained=json.loads((single/'plan.json').read_text());retained['repeats']=1;put(single/'plan.json',retained)
+        for repeat in (2,3): shutil.rmtree(single/f'cohort/t2-ep00-r0{repeat}')
+        result=self.command('qualify','--out',single)
+        self.assertNotEqual(result.returncode,0,result.stdout)
+        self.assertIn('production requires the frozen k=3',result.stderr)
+        self.assertFalse((single/'selected.json').exists())
+        put(cohort/'plan.json',{**plan,'repeats':1})
+        result=self.merge([cohort],'k1-release')
+        self.assertNotEqual(result.returncode,0,result.stdout)
+        self.assertIn('production requires the frozen k=3',result.stderr)
+        self.assertFalse((self.work/'k1-release').exists())
 
     def test_tier3_five_hosts_from_one_coverage_merge_all_30(self):
         self.roster(30)
@@ -220,6 +445,7 @@ class Pipeline(unittest.TestCase):
     def test_export_rehashes_frozen_support_before_claiming_an_attempt(self):
         self.roster(1)
         cohort=self.qualified([0])
+        work=self.frozen_work(cohort)
         support=self.supports[-1]
         support.write_text('#usda 1.0\ndef Cube "unexpected_obstacle" {}\n')
         events=self.work/'export-calls'
@@ -227,8 +453,7 @@ class Pipeline(unittest.TestCase):
         boundary.write_text('#!'+sys.executable+'\nimport os,sys\nfrom pathlib import Path\n'
             'with Path(os.environ["EXPORT_EVENTS"]).open("a") as f:f.write(sys.argv[1]+"\\n")\n')
         boundary.chmod(0o755)
-        result=self.command('export','--out',cohort,'--work',self.work/'frozen','--commit',
-            'https://github.com/fixture/fixture/commit/0123456789abcdef',
+        result=self.command('export','--out',cohort,'--work',work,'--commit',EXPORT_URL,
             env={'PYTHON':str(boundary),'PACK_PYTHON':str(boundary),'EXPORT_EVENTS':str(events)})
         self.assertNotEqual(result.returncode,0,'export evaluated a different scene from the qualified inputs')
         self.assertFalse(events.exists(),'input custody must fail before GPU evaluation or packing')
@@ -264,24 +489,51 @@ Path.write_text,os.replace=write,rename
         self.assertEqual(binding['selected_sha256'],sha(cohort/'selected.json'))
         self.assertEqual(binding['checkpoints'],{p:sha(p) for p in selected.values()})
 
-    def test_missing_nonfinite_and_extra_members_fail_without_publishing(self):
+    def test_custody_failures_block_even_invalid_outputs(self):
         self.roster(1)
-        for mutation in ('missing','nonfinite','extra'):
+        for mutation in ('missing','hash','extra','checkpoint','input','runtime','evaluator','protocol'):
             with self.subTest(mutation=mutation):
                 cohort=self.cohort([0])
-                trajectory=next(cohort.rglob('trajectory.parquet'))
+                trajectory=sorted(cohort.rglob('trajectory.parquet'))[-1]
                 if mutation=='missing': trajectory.unlink()
-                elif mutation=='nonfinite':
+                else:
                     table=pq.ParquetFile(trajectory).read()
                     import pyarrow as pa
                     table=table.set_column(table.column_names.index('achieved_position_x'),'achieved_position_x',pa.array([float('nan')]*len(table)))
                     pq.write_table(table,trajectory)
                     stamp=trajectory.with_name('evaluation.done.json')
-                    done=json.loads(stamp.read_text());done['trajectory_sha256']=sha(trajectory);put(stamp,done)
+                    done=json.loads(stamp.read_text())
+                    if mutation!='hash': done['trajectory_sha256']=sha(trajectory)
+                    if mutation=='input': done['input']='clean'
+                    if mutation=='evaluator': done['evaluator']='f'*64
+                    if mutation=='runtime':
+                        plan=json.loads((cohort/'plan.json').read_text());plan['evaluator']='f'*64;put(cohort/'plan.json',plan)
+                    if mutation=='checkpoint': (trajectory.parents[3]/f'train/seq0/policy_{SHORT}.safetensors').write_text('changed')
+                    if mutation=='protocol':
+                        metrics=trajectory.with_name('metrics.json');raw=json.loads(metrics.read_text());raw['world_count']=2;put(metrics,raw)
+                        done['metrics_sha256']=sha(metrics)
+                    put(stamp,done)
                 if mutation=='extra':
                     extra=cohort/'cohort/extra';extra.mkdir(exist_ok=True);shutil.copyfile(trajectory,extra/'trajectory.parquet')
                 result=self.command('qualify','--out',cohort)
                 self.assertNotEqual(result.returncode,0,result.stdout)
+                self.assertFalse((cohort/'selected.json').exists())
+
+    def test_failed_evaluations_cannot_bypass_frozen_custody(self):
+        self.roster(1)
+        for mutation in ('checkpoint','input','runtime'):
+            with self.subTest(mutation=mutation):
+                cohort=self.cohort([0],evaluated=False)
+                run=self.command('run','--out',cohort,env=self.evaluator(FAKE_FAIL_ALL='1'))
+                self.assertEqual(run.returncode,0,run.stderr)
+                plan=json.loads((cohort/'plan.json').read_text())
+                if mutation=='checkpoint':
+                    checkpoint=cohort/'cohort/t2-ep00-r03/T2C-contact/raw_repaired'/f'train/seq0/policy_{SHORT}.safetensors'
+                    checkpoint.write_text('changed')
+                if mutation=='input': self.supports[-1].write_text('changed')
+                if mutation=='runtime': plan['evaluator']='f'*64;put(cohort/'plan.json',plan)
+                result=self.command('qualify','--out',cohort)
+                self.assertEqual(result.returncode,1,result.stdout+result.stderr)
                 self.assertFalse((cohort/'selected.json').exists())
 
     def test_selection_uses_all_three_rollouts_and_final_wins_ties(self):

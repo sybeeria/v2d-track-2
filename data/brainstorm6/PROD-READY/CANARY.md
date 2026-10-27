@@ -40,12 +40,15 @@ PYCTRL
 }
 start_controller() {
   .venv/bin/python - "$D" "$1" <<'PYCTRL'
-import subprocess,sys
+import re,subprocess,sys
 from pathlib import Path
 d=Path(sys.argv[1]);record=d/sys.argv[2]
+# Rearm with the limits this run's latest guard started with (the start_run.sh arguments), never literals.
+cap,floor=re.findall(r' watchdog start .*\bcap=(\S+) floor=(\S+)',(d/'watchdog.log').read_text())[-1]
 with (d/'controller.log').open('a') as log:
- p=subprocess.Popen(['caffeinate','-i','bash','scripts/vast/watchdog.sh',str(d),'12','1'],stdout=log,stderr=log,start_new_session=True)
+ p=subprocess.Popen(['caffeinate','-i','bash','scripts/vast/watchdog.sh',str(d),cap,floor],stdout=log,stderr=log,start_new_session=True)
 record.write_text(str(p.pid)+'\n')
+print(f'watchdog {p.pid}: cap ${cap}, credit floor ${floor}')
 PYCTRL
 }
 ssh "${S[@]}" root@"$HOST" "df -h '$R'; nvidia-smi --query-gpu=index,name,driver_version,memory.total,memory.free --format=csv"
@@ -106,7 +109,10 @@ stop_controller "$D/controller-watchdog.pid"
 ssh "${S[@]}" root@"$HOST" "read -r p < /workspace/$name.pid; case \$p in ''|*[!0-9]*) exit 1;; esac; test \$p -gt 1 && kill -TERM -- -\$p"
 # Final state was already pulled and independently loaded in step 2.
 # Only a successful destroy may publish the stop receipt that lets a different instance take over this run (B8 C7).
-vastai destroy instance "$ID" -y && echo "$(date -u +%FT%TZ) manual canary preemption: destroyed $ID" > "$D/STOPPED"
+# The CLI exits 0 even on a refused destroy (a 401 after 2FA expiry, BOX-10); only its success line counts.
+out=$(vastai destroy instance "$ID" -y 2>&1); echo "$out"
+case "$out" in *"destroying instance $ID."*) echo "$(date -u +%FT%TZ) manual canary preemption: destroyed $ID" > "$D/STOPPED" ;;
+  *) echo "destroy NOT confirmed for $ID; stop here" >&2; false ;; esac &&
 cp "$D/STOPPED" "$D/canary-evidence-STOPPED-$ID"
 # Parent chooses a fresh compatible offer using MORNING.md, creates it, sets NEW_ID.
 bash scripts/vast/start_run.sh "$D" "$NEW_ID" 16
@@ -131,4 +137,4 @@ CANARY_REAL_RSYNC=$(cat "$D/real-rsync") PATH="$D/fail-bin:$PATH" \
 
 [I] Once remote `box done` is present and watchdog logs `backup failed (finished)`, REQUIRE no newly created `STOPPED`, no destroy request in watchdog.log, and the same live provider instance. The failure watchdog must stay alive and retry, not silently exit. Check `kill -0` on its recorded PID. If cap/floor has already tripped this test is INVALID; the hard rule is expected to destroy, so do not call that a durability defect. Run `stop_controller "$D/failure-watchdog.pid"`, remove only `D/fail-bin` and `D/real-rsync`, run `start_controller controller-watchdog.pid` to rearm the real watchdog, and require a successful final pull and destroy request. Independently confirm provider removal/billing; `STOPPED` proves only a successful request. Preserve all logs including the injected failure.
 
-[G] Canary GO only when ALL of backup, byte-identical fresh restore, real policy reload, actual resume, failure-blocked soft destroy, and independent final provider termination pass. Otherwise no second training host. The Mac fixture proves transport/coordinator behavior, not this real gate. Cap $12 for the canary/replacement combined is an operating envelope, not a promise that the original box alone enforces a cross-instance sum; parent tracks both instances in its spend ledger.
+[G] Canary GO only when ALL of backup, byte-identical fresh restore, real policy reload, actual resume, failure-blocked soft destroy, and independent final provider termination pass. Otherwise no second training host. The Mac fixture proves transport/coordinator behavior, not this real gate. Cap $16 for the canary/replacement combined is an operating envelope, not a promise that the original box alone enforces a cross-instance sum; parent tracks both instances in its spend ledger.

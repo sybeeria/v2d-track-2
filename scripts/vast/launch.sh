@@ -43,10 +43,46 @@ fi
 if [ -d "$D/payload/runs/$name/input-assets" ]; then
     python3 -B "$P/data/brainstorm6/PROD-READY/verify_payload.py" --pilot "$D"
 fi
-read -r host port < <(vastai show instance "$id" --raw | python3 -I -c "import json,sys; o=json.load(sys.stdin); print(o['public_ipaddr'].strip(), o['ports']['22/tcp'][0]['HostPort'])")
+endpoint=$(vastai show instance "$id" --raw | python3 -I -c "
+import json,sys; o=json.load(sys.stdin); h=o['public_ipaddr'].strip(); p=str(o['ports']['22/tcp'][0]['HostPort'])
+sys.exit(1) if not h or len(h.split()) != 1 or not p.isdecimal() else print(h, p)") ||
+    { echo "cannot read the SSH endpoint of instance $id; $D/host kept" >&2; exit 1; }
+read -r host port <<< "$endpoint"
 echo "$id $host $port" > "$D/host"
 # The box gets the working tree without .git; tie each launch to the commit a code_commit_url can name.
-echo "$(date -u +%FT%TZ) $id $(git -C "$P" rev-parse HEAD 2>/dev/null || echo no-git) changed_files=$(git -C "$P" status --porcelain 2>/dev/null | wc -l | tr -d ' ')" >> "$D/launch-code.log"
+code_commit=$(git -C "$P" rev-parse HEAD 2>/dev/null || echo no-git)
+changed_files=$(git -C "$P" status --porcelain 2>/dev/null | wc -l | tr -d ' ') || changed_files=unknown
+if [[ "$code_commit" =~ ^[0-9a-f]{40}$ && "$changed_files" =~ ^[0-9]+$ ]] && [ -d "$D/payload" ] && [ ! -f "$D/entry.sh" ]; then
+    payload_changes=$(python3 - "$P" "$D/payload" "$code_commit" <<'PYPAYLOAD'
+import re, subprocess, sys
+from pathlib import Path
+project, payload, commit = sys.argv[1:]
+def git(*args): return subprocess.check_output(['git', '-C', project, *args])
+tracked = set(git('ls-tree', '-r', '--name-only', '-z', commit).decode().split('\0'))
+name = re.escape(Path(payload).parent.name)
+asset_extensions = {'.parquet', '.npy', '.obj', '.mtl', '.png', '.urdf', '.usda'}
+def run_data(relative):
+    seed = r'data/brainstorm6/PROD-READY/seed-inputs/' + name + '/'
+    inputs = 'runs/' + name + '/input-assets/'
+    if re.fullmatch(seed + r'manifest\.json|' + inputs + r'binding\.json', relative): return True
+    if re.fullmatch(inputs + r'roster/meta/(?:info\.json|episodes_metadata\.jsonl)', relative): return True
+    location = (seed + r'files/data/work/tier[123]/.+|' +
+                inputs + r'(?:ep[0-9]+/)?assets/human_motion_data/whole_body/.+')
+    return bool(re.fullmatch(location, relative)) and Path(relative).suffix in asset_extensions
+changed = 0
+for path in Path(payload).rglob('*'):
+    relative = path.relative_to(payload).as_posix()
+    if path.is_symlink(): changed += 1
+    elif path.is_file():
+        changed += (path.read_bytes() != git('show', commit + ':' + relative) if relative in tracked else not run_data(relative))
+print(changed)
+PYPAYLOAD
+)
+    # Dirty training is allowed; exports require changed_files=0 after the payload overlay too.
+    changed_files=$((changed_files + payload_changes))
+fi
+code_record="$code_commit changed_files=$changed_files"
+echo "$(date -u +%FT%TZ) $id $code_record" >> "$D/launch-code.log"
 if [ "${VAST_GUARDED_LAUNCH:-}" != 1 ]; then rm -f "$D/STOPPED" "$D/BACKUP_FAILED" "$D/QUIESCED"; fi
 ssh_opts=(-o StrictHostKeyChecking=accept-new -o ConnectTimeout=20 -o ServerAliveInterval=30 -i "$HOME/.ssh/id_ed25519" -p "$port")
 # A pre-upload watchdog cycle cannot arm a script that is not installed yet.
@@ -59,22 +95,25 @@ ensure_deadman() {
         echo $deadline $grace > /workspace/$name.deadline.tmp && mv /workspace/$name.deadline.tmp /workspace/$name.deadline || exit 1
         { setsid nohup bash /workspace/v2d-track-2/scripts/vast/deadman.sh $name >> /workspace/$name.deadman.log 2>&1 < /dev/null & }
         for attempt in {1..50}; do
-            if read -r armed_instance armed_pid < /workspace/$name.deadman.ready 2>/dev/null &&
+            if read -r armed_instance armed_pid 2>/dev/null < /workspace/$name.deadman.ready &&
                [ \"\$armed_instance\" = $id ] && kill -0 \"\$armed_pid\" 2>/dev/null; then exit 0; fi
             sleep .1
         done
         echo 'box deadman failed to arm; no writer started' >&2; exit 1"
 }
 # An SSH acknowledgement can be lost after the box starts. Preserve that writer and its log on retry.
+# A dead pid group with only "box start" is an interrupted writer (e.g. container restart): start one, appending its log.
 existing=$(ssh "${ssh_opts[@]}" root@"$host" "
     if [ -s /workspace/$name.pid ]; then
         read -r existing_pid < /workspace/$name.pid
         case \"\$existing_pid\" in ''|*[!0-9]*) exit 1;; esac
-        if kill -0 \"\$existing_pid\" 2>/dev/null || grep -qE '^box (start|done|failed) ' /workspace/$name.log; then echo started; fi
+        if kill -0 \"\$existing_pid\" 2>/dev/null || kill -0 -- -\$existing_pid 2>/dev/null || grep -qE '^box (done|failed) ' /workspace/$name.log; then echo started; fi
     fi
     true" | tail -1)
 if [ "$existing" = started ]; then ensure_deadman; echo "box already launched: $name; original writer retained"; exit 0; fi
 ssh "${ssh_opts[@]}" root@"$host" "mkdir -p /workspace/v2d-track-2/data/denoise_eval" 2>&1 | grep -v "Welcome\|Have fun" || true
+# A failed or partial upload cannot retain an earlier full-project identity.
+ssh "${ssh_opts[@]}" root@"$host" "rm -f /workspace/v2d-track-2/LAUNCH_COMMIT"
 if [ -f "$D/entry.sh" ]; then
     ssh "${ssh_opts[@]}" root@"$host" "mkdir -p /workspace/v2d-track-2/scripts/tier3_native"
     rsync -az -e "ssh ${ssh_opts[*]}" --exclude '.*' --exclude __pycache__ --include '*/' --include '*.py' --include '*.sh' --include '*.diff' --exclude '*' \
@@ -86,7 +125,7 @@ if [ -f "$D/entry.sh" ]; then
     fi
 else
     rsync -az -e "ssh ${ssh_opts[*]}" --exclude '.venv*' --exclude external --exclude data --exclude runs \
-        --exclude '__pycache__' --exclude .git "$P/" root@"$host":/workspace/v2d-track-2/
+        --exclude '__pycache__' --exclude .git --exclude LAUNCH_COMMIT "$P/" root@"$host":/workspace/v2d-track-2/
 fi
 if [ ! -f "$D/entry.sh" ]; then
     rsync -az -e "ssh ${ssh_opts[*]}" "$P"/data/denoise_eval/*config.json root@"$host":/workspace/v2d-track-2/data/denoise_eval/
@@ -115,6 +154,9 @@ fi
 for hook in pre post entry; do
     [ ! -f "$D/$hook.sh" ] || rsync -az -e "ssh ${ssh_opts[*]}" "$D/$hook.sh" root@"$host":/workspace/"$name.$hook".sh
 done
+if [ ! -f "$D/entry.sh" ]; then
+    ssh "${ssh_opts[@]}" root@"$host" "printf '%s\n' '$code_record' > /workspace/v2d-track-2/LAUNCH_COMMIT.tmp && mv /workspace/v2d-track-2/LAUNCH_COMMIT.tmp /workspace/v2d-track-2/LAUNCH_COMMIT"
+fi
 ensure_deadman
 [ "${VAST_GUARDED_LAUNCH:-}" != 1 ] || [ ! -f "$D/STOPPED" ] || { echo "watchdog stopped this instance before launch" >&2; exit 1; }
-ssh "${ssh_opts[@]}" root@"$host" "setsid nohup bash /workspace/$name.sh > /workspace/$name.log 2>&1 < /dev/null & echo \$! > /workspace/$name.pid; echo launched" 2>&1 | grep -v "Welcome\|Have fun"
+ssh "${ssh_opts[@]}" root@"$host" "setsid nohup bash /workspace/$name.sh >> /workspace/$name.log 2>&1 < /dev/null & echo \$! > /workspace/$name.pid; echo launched" 2>&1 | grep -v "Welcome\|Have fun"

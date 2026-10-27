@@ -7,7 +7,7 @@ HERE=Path(__file__).resolve().parent;ROOT=HERE.parents[2]
 def main():
     p=argparse.ArgumentParser();p.add_argument('--tier',type=int,choices=[1,2,3],required=True);p.add_argument('--jobs',type=Path,required=True)
     p.add_argument('--frozen-from',type=Path);p.add_argument('--coverage',type=Path,help='Tier 3 bridge coverage_manifest.json (decision D2); omit for the ep18 pilot');p.add_argument('--pilot-decision',type=Path);p.add_argument('--freeze-other-tier',action='store_true');p.add_argument('--k',type=int,default=3);p.add_argument('--name',required=True);args=p.parse_args()
-    if args.k<1:raise ValueError('k must be positive')
+    if args.k!=3:raise ValueError('production requires the frozen k=3')
     if not args.name.replace('-','').replace('_','').isalnum():raise ValueError('unsafe run name')
     if args.tier==3:
         (stage_tier3_coverage if args.coverage else stage_ep18)(args);return
