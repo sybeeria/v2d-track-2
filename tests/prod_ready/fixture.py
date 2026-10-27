@@ -58,18 +58,18 @@ class Fixture:
         for name in ['flash_chord/scripts/evaluate_policy.py','data/track_2_sample_submission.csv']:
             if name in manifest['files']:manifest['files'][name]=sha(kit/name)
         (kit/'KIT_MANIFEST.json').write_text(json.dumps(manifest))
-    def run_spec(self,tier,name):
+    def run_spec(self,tier,name,episodes=(0,1)):
         run=self.work/name;run.mkdir();payload=run/'payload'
         for directory in ['tier_1_multiview_caption','tier_2_synthetic_noise','baseline']:
             base=payload/'data/challenge/track_2'/directory
-            put(base/'meta/info.json',json.dumps({'total_episodes':2,'chunks_size':1000,'data_path':'data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet'}))
+            put(base/'meta/info.json',json.dumps({'total_episodes':len(episodes),'chunks_size':1000,'data_path':'data/chunk-{episode_chunk:03d}/episode_{episode_index:06d}.parquet'}))
             canonical=base/'mesh/object/object_visual.glb';canonical.parent.mkdir(parents=True,exist_ok=True)
             trimesh.creation.box().export(canonical)
             records=[{'episode_index':e,'sequence_id':f'seq{e}','frames':10,'length':10,
-                      'mesh':'mesh/object/object_visual.glb'} for e in range(2)]
+                      'mesh':'mesh/object/object_visual.glb'} for e in episodes]
             text=''.join(json.dumps(r)+'\n' for r in records)
             put(base/'meta/episodes_metadata.jsonl',text);put(base/'meta/episodes.jsonl',text)
-            for e in range(2):
+            for e in episodes:
                 poses=np.tile([0.,0.,0.,1.,0.,0.,0.],(10,1))
                 table=pa.table({'frame_index':np.arange(10),'observation.object.pose':pa.array(poses.tolist(),type=pa.list_(pa.float64(),7)),
                                 'observation.object.visible':np.ones(10,dtype=bool)}).replace_schema_metadata({b'objects':b'["object"]'})
@@ -81,7 +81,7 @@ class Fixture:
         manifest={'tier':tier,'scoring_mode':'self','sequences':[]}
         mesh=payload/'data/fixture/mesh.ply';mesh.parent.mkdir(parents=True,exist_ok=True);trimesh.creation.box().export(mesh)
         mesh_remote=self.remote/mesh.relative_to(payload)
-        for e in range(2):
+        for e in episodes:
             seq=f'seq{e}';base=payload/f'data/fixture/tier{tier}';ref=base/f'motion/whole_body/soma/sequence_id={seq}/robot_name=g1/data.parquet';ref.parent.mkdir(parents=True,exist_ok=True)
             pq.write_table(pa.Table.from_pylist([{'schema_version':'motion_v1','episode_index':e,'object_body_names':['object'],
                 'object_mesh_paths':[str(mesh_remote)],'object_body_position':np.zeros((10,1,3)).tolist(),
@@ -97,7 +97,7 @@ class Fixture:
             f'archive="runs/{name}/frozen-inputs"\n'+
             'if [ -f "$archive/manifest.json" ]; then .venv/bin/python scripts/freeze_inputs.py restore --archive "$archive"; fi\n'+
             f'.venv/bin/python scripts/freeze_inputs.py capture --manifest "$MANIFEST" --work data/fixture/tier{tier} --archive "$archive"\n')
-        put(run/'jobs.txt',''.join(f't{tier}-ep{e}|{arm}.txt|{arm}|{label}|seq{e}|'+('330012672 349999104' if tier==1 else '49999872')+'\n' for e in range(2)))
+        put(run/'jobs.txt',''.join(f't{tier}-ep{e}|{arm}.txt|{arm}|{label}|seq{e}|'+('330012672 349999104' if tier==1 else '49999872')+'\n' for e in episodes))
         return run,label,arm
     def command(self,args,env=None,timeout=40):
         return subprocess.run(args,cwd=self.controller,env={**self.env,**(env or {})},capture_output=True,text=True,timeout=timeout)

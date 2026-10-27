@@ -62,9 +62,10 @@ for i in "${!JOBS[@]}"; do
     names+="$name|"
     if [ $((i % shards)) -eq "$shard" ]; then selected+=("${JOBS[$i]}"); fi
 done
-JOBS=("${selected[@]}")
+# Bash 3 with nounset rejects direct expansion of an empty queue.
+JOBS=(${selected[@]+"${selected[@]}"})
 if [ "$dry" = --dry-run ]; then
-    for job in "${JOBS[@]}"; do run_job 0 "$job" --dry-run; done
+    for job in ${JOBS[@]+"${JOBS[@]}"}; do run_job 0 "$job" --dry-run; done
     exit 0
 fi
 mkdir -p "$out"
@@ -98,7 +99,7 @@ for ((gpu = 0; gpu < gpus; gpu++)); do worker "$gpu" & pids+=("$!"); done
 failed=0
 for pid in "${pids[@]}"; do wait "$pid" || failed=1; done
 first=1
-for job in "${JOBS[@]}"; do
+for job in ${JOBS[@]+"${JOBS[@]}"}; do
     table="$out/${job%%|*}/summary.tsv"
     [ -f "$table" ] || continue
     if [ "$first" ]; then cat "$table"; first=; else tail -n +2 "$table"; fi
