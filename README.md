@@ -2,7 +2,23 @@
 
 # V2D Track 2
 
-Entry for the [NVIDIA Video-to-Data Challenge](https://nvidia-isaac.github.io/video_to_data/v2d_challenge/), Track 2 (robotic grounding on G1 + Dex3), all three tiers. Built on [nvidia-isaac/video_to_data](https://github.com/nvidia-isaac/video_to_data) at commit `7eb9721`.
+Turning human motion data into whole-body robot policies: retarget human-object interactions to a simulated Unitree G1 with Dex3 hands, train one RL policy per episode, and evaluate it with the challenge kit.
+
+**Independent project, never submitted.** Built on the task from the [NVIDIA Video-to-Data Challenge](https://nvidia-isaac.github.io/video_to_data/v2d_challenge/) (CoRL 2026), Track 2. Every number below is self-evaluated; the organizers scored nothing here. Built on [nvidia-isaac/video_to_data](https://github.com/nvidia-isaac/video_to_data) at commit `7eb9721`. Not affiliated with or endorsed by NVIDIA.
+
+## Results
+
+Policies are trained with FlashSAC from upstream's FlashCHORD, on rented GPUs, for about $100 in total.
+
+| Tier | Input | Outcome |
+|---|---|---|
+| 1 | Clean motion | 30 of 30 policies qualified: mean AUC 0.746 (range 0.117-0.996), SP-SR 0.80, MP-SR 0.767, MPPE 11.5 cm |
+| 2 | Synthetic noise | 30 of 30 policies trained. Checked against their own noisy input: 4 pass, 10 fail on orientation only, 16 fail badly. Not scored against the clean reference, by rule |
+| 3 | Monocular video | 30 episodes reconstructed, none cleared the quality gates; the pilot policies failed. No qualified policy |
+
+How to read the Tier 1 numbers: each policy is the better of two training checkpoints by mean AUC, under rules frozen beforehand, and its score is the mean of all 3 evaluation repeats rather than the best one. They come from my own runs of the kit evaluator. The best AUC on the final public Tier 1 board was 0.949.
+
+What worked: the contact relabeling below, frozen decision rules, and the rented-GPU runner (spend caps, a deadman switch on the box, hash-checked backups before any instance is destroyed). What didn't: Tier 2 policies inherit the noise in their reference, and Tier 3 reconstruction never got past its gates. I also left the submission steps until too late.
 
 ## Pipeline
 
@@ -48,7 +64,7 @@ uv venv --python 3.11 .venv
 scripts/retarget_tier.sh data/challenge/track_2/tier_1_multiview_caption data/work/tier1 3
 ```
 
-`external/` (upstream clone, kit) and `data/` are not tracked; `scripts/gpu_bootstrap.sh` recreates them.
+`external/` (upstream clone, kit) and most of `data/` are not tracked; `scripts/gpu_bootstrap.sh` recreates the upstream code and challenge data. Reports and plans under `data/` that this README names but the repo lacks are local records. A fresh clone therefore can't run the whole test suite: many tests need the retargeted data, the upstream checkout and the trained policies, none of which are included.
 
 ## Tier 2: contact labels
 
@@ -87,8 +103,8 @@ Tier 3 reconstructs each episode from the exo video with upstream's SAM2 → CAR
 
 Status:
 - The alignment math is tested on CPU: `.venv/bin/python -m unittest discover -s tests -p 'test_tier3_align.py'`.
-- The GPU steps have not been run yet.
-- Access to the gated `facebook/sam-3d-body-dinov3` and `nvidia/cari4d_commercial` weights is confirmed (2026-10-21; the CARI4D checkpoint's SHA-256 matches the pin). Still unresolved: whether Tier 3 may use the released object meshes and scene files.
+- All 30 episodes were reconstructed on rented GPUs. None passed the quality gates (see Results).
+- Access to the gated `facebook/sam-3d-body-dinov3` and `nvidia/cari4d_commercial` weights is confirmed (2026-10-21; the CARI4D checkpoint's SHA-256 matches the pin). Whether Tier 3 may use the released object meshes and scene files was never resolved with the organizers.
 
 `docs/tier3.md` has the commands, pinned weights, costs and kill criteria.
 
