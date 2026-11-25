@@ -1,0 +1,105 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 672" width="760" height="672" role="img" aria-label="Tier 1 tracking score for each of 30 tasks, from 0.996 down to 0.117" font-family="ui-sans-serif,system-ui,-apple-system,Segoe UI,Helvetica,Arial,sans-serif">
+<text x="0" y="18" font-size="15" font-weight="600" fill="#efefef">Tier 1: object-tracking AUC by task</text>
+<text x="0" y="38" font-size="12" fill="#9c9c9c">Mean of 3 evaluation runs per policy. 1.0 is perfect.</text>
+<text x="760" y="56" font-size="11" fill="#9c9c9c" text-anchor="end">Runs passed</text>
+<line x1="215.0" x2="215.0" y1="64" y2="634" stroke="#33363b"/>
+<text x="215.0" y="651" font-size="11" fill="#9c9c9c" text-anchor="middle">0</text>
+<line x1="333.8" x2="333.8" y1="64" y2="634" stroke="#33363b"/>
+<text x="333.8" y="651" font-size="11" fill="#9c9c9c" text-anchor="middle">0.25</text>
+<line x1="452.5" x2="452.5" y1="64" y2="634" stroke="#33363b"/>
+<text x="452.5" y="651" font-size="11" fill="#9c9c9c" text-anchor="middle">0.5</text>
+<line x1="571.2" x2="571.2" y1="64" y2="634" stroke="#33363b"/>
+<text x="571.2" y="651" font-size="11" fill="#9c9c9c" text-anchor="middle">0.75</text>
+<line x1="690.0" x2="690.0" y1="64" y2="634" stroke="#33363b"/>
+<text x="690.0" y="651" font-size="11" fill="#9c9c9c" text-anchor="middle">1</text>
+<text x="205" y="77.5" font-size="12" fill="#efefef" text-anchor="end">Pour watering can</text>
+<path d="M215 67h470.2a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-470.2z" fill="#338ced"/>
+<text x="760" y="77.5" font-size="12" fill="#9c9c9c" text-anchor="end">3/3</text>
+<text x="205" y="96.5" font-size="12" fill="#efefef" text-anchor="end">Tip up bar stool</text>
+<path d="M215 86h459.0a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-459.0z" fill="#338ced"/>
+<text x="760" y="96.5" font-size="12" fill="#9c9c9c" text-anchor="end">3/3</text>
+<text x="205" y="115.5" font-size="12" fill="#efefef" text-anchor="end">Roll toy stroller</text>
+<path d="M215 105h454.8a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-454.8z" fill="#338ced"/>
+<text x="760" y="115.5" font-size="12" fill="#9c9c9c" text-anchor="end">3/3</text>
+<text x="205" y="134.5" font-size="12" fill="#efefef" text-anchor="end">Drag trash can sideways</text>
+<path d="M215 124h452.7a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-452.7z" fill="#338ced"/>
+<text x="760" y="134.5" font-size="12" fill="#9c9c9c" text-anchor="end">3/3</text>
+<text x="205" y="153.5" font-size="12" fill="#efefef" text-anchor="end">Push wood chair</text>
+<path d="M215 143h451.6a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-451.6z" fill="#338ced"/>
+<text x="760" y="153.5" font-size="12" fill="#9c9c9c" text-anchor="end">3/3</text>
+<text x="205" y="172.5" font-size="12" fill="#efefef" text-anchor="end">Turn rice cooker</text>
+<path d="M215 162h449.8a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-449.8z" fill="#338ced"/>
+<text x="760" y="172.5" font-size="12" fill="#9c9c9c" text-anchor="end">3/3</text>
+<text x="205" y="191.5" font-size="12" fill="#efefef" text-anchor="end">Drag step ladder</text>
+<path d="M215 181h448.7a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-448.7z" fill="#338ced"/>
+<text x="760" y="191.5" font-size="12" fill="#9c9c9c" text-anchor="end">3/3</text>
+<text x="205" y="210.5" font-size="12" fill="#efefef" text-anchor="end">Turn platform</text>
+<path d="M215 200h448.5a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-448.5z" fill="#338ced"/>
+<text x="760" y="210.5" font-size="12" fill="#9c9c9c" text-anchor="end">3/3</text>
+<text x="205" y="229.5" font-size="12" fill="#efefef" text-anchor="end">Rotate skateboard</text>
+<path d="M215 219h442.8a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-442.8z" fill="#338ced"/>
+<text x="760" y="229.5" font-size="12" fill="#9c9c9c" text-anchor="end">3/3</text>
+<text x="205" y="248.5" font-size="12" fill="#efefef" text-anchor="end">Spray bottle, desk and ground</text>
+<path d="M215 238h431.5a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-431.5z" fill="#338ced"/>
+<text x="760" y="248.5" font-size="12" fill="#9c9c9c" text-anchor="end">3/3</text>
+<text x="205" y="267.5" font-size="12" fill="#efefef" text-anchor="end">Coffee mug by handle</text>
+<path d="M215 257h430.4a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-430.4z" fill="#338ced"/>
+<text x="760" y="267.5" font-size="12" fill="#9c9c9c" text-anchor="end">3/3</text>
+<text x="205" y="286.5" font-size="12" fill="#efefef" text-anchor="end">Push luggage with foot</text>
+<path d="M215 276h429.9a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-429.9z" fill="#338ced"/>
+<text x="760" y="286.5" font-size="12" fill="#9c9c9c" text-anchor="end">3/3</text>
+<text x="205" y="305.5" font-size="12" fill="#efefef" text-anchor="end">Pull bar stool</text>
+<path d="M215 295h429.0a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-429.0z" fill="#338ced"/>
+<text x="760" y="305.5" font-size="12" fill="#9c9c9c" text-anchor="end">3/3</text>
+<text x="205" y="324.5" font-size="12" fill="#efefef" text-anchor="end">Rotate monitor</text>
+<path d="M215 314h414.9a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-414.9z" fill="#338ced"/>
+<text x="760" y="324.5" font-size="12" fill="#9c9c9c" text-anchor="end">3/3</text>
+<text x="205" y="343.5" font-size="12" fill="#efefef" text-anchor="end">Place wet floor sign</text>
+<path d="M215 333h410.7a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-410.7z" fill="#338ced"/>
+<text x="760" y="343.5" font-size="12" fill="#9c9c9c" text-anchor="end">3/3</text>
+<text x="205" y="362.5" font-size="12" fill="#efefef" text-anchor="end">Flip round table</text>
+<path d="M215 352h402.1a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-402.1z" fill="#338ced"/>
+<text x="760" y="362.5" font-size="12" fill="#9c9c9c" text-anchor="end">3/3</text>
+<text x="205" y="381.5" font-size="12" fill="#efefef" text-anchor="end">Rotate box</text>
+<path d="M215 371h399.1a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-399.1z" fill="#338ced"/>
+<text x="760" y="381.5" font-size="12" fill="#9c9c9c" text-anchor="end">3/3</text>
+<text x="205" y="400.5" font-size="12" fill="#efefef" text-anchor="end">Pick and place book</text>
+<path d="M215 390h379.6a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-379.6z" fill="#338ced"/>
+<text x="760" y="400.5" font-size="12" fill="#9c9c9c" text-anchor="end">3/3</text>
+<text x="205" y="419.5" font-size="12" fill="#efefef" text-anchor="end">Snack box across desk</text>
+<path d="M215 409h374.6a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-374.6z" fill="#338ced"/>
+<text x="760" y="419.5" font-size="12" fill="#9c9c9c" text-anchor="end">3/3</text>
+<text x="205" y="438.5" font-size="12" fill="#efefef" text-anchor="end">Traffic cone, ground to table</text>
+<path d="M215 428h370.2a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-370.2z" fill="#338ced"/>
+<text x="760" y="438.5" font-size="12" fill="#9c9c9c" text-anchor="end">3/3</text>
+<text x="205" y="457.5" font-size="12" fill="#efefef" text-anchor="end">Lower desk to ground</text>
+<path d="M215 447h362.7a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-362.7z" fill="#338ced"/>
+<text x="760" y="457.5" font-size="12" fill="#9c9c9c" text-anchor="end">3/3</text>
+<text x="205" y="476.5" font-size="12" fill="#efefef" text-anchor="end">Basket, ground and desk</text>
+<path d="M215 466h340.8a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-340.8z" fill="#338ced"/>
+<text x="760" y="476.5" font-size="12" fill="#efefef" text-anchor="end">2/3</text>
+<text x="205" y="495.5" font-size="12" fill="#efefef" text-anchor="end">Swing cane</text>
+<path d="M215 485h323.7a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-323.7z" fill="#338ced"/>
+<text x="760" y="495.5" font-size="12" fill="#9c9c9c" text-anchor="end">3/3</text>
+<text x="205" y="514.5" font-size="12" fill="#efefef" text-anchor="end">Place Easter basket</text>
+<path d="M215 504h298.0a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-298.0z" fill="#338ced"/>
+<text x="760" y="514.5" font-size="12" fill="#efefef" text-anchor="end">2/3</text>
+<text x="205" y="533.5" font-size="12" fill="#efefef" text-anchor="end">Sweep with squeegee</text>
+<path d="M215 523h231.3a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-231.3z" fill="#338ced"/>
+<text x="760" y="533.5" font-size="12" fill="#efefef" text-anchor="end">2/3</text>
+<text x="205" y="552.5" font-size="12" fill="#efefef" text-anchor="end">Bowl under chair</text>
+<path d="M215 542h105.9a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-105.9z" fill="#338ced"/>
+<text x="760" y="552.5" font-size="12" fill="#efefef" text-anchor="end">0/3</text>
+<text x="205" y="571.5" font-size="12" fill="#efefef" text-anchor="end">Round iron table</text>
+<path d="M215 561h105.2a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-105.2z" fill="#338ced"/>
+<text x="760" y="571.5" font-size="12" fill="#efefef" text-anchor="end">0/3</text>
+<text x="205" y="590.5" font-size="12" fill="#efefef" text-anchor="end">Lean vacuum</text>
+<path d="M215 580h103.7a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-103.7z" fill="#338ced"/>
+<text x="760" y="590.5" font-size="12" fill="#efefef" text-anchor="end">0/3</text>
+<text x="205" y="609.5" font-size="12" fill="#efefef" text-anchor="end">Rotate baseball bat</text>
+<path d="M215 599h70.0a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-70.0z" fill="#338ced"/>
+<text x="760" y="609.5" font-size="12" fill="#efefef" text-anchor="end">0/3</text>
+<text x="205" y="628.5" font-size="12" fill="#efefef" text-anchor="end">Rotate water bottle</text>
+<path d="M215 618h52.6a3 3 0 0 1 3 3v7a3 3 0 0 1 -3 3h-52.6z" fill="#338ced"/>
+<text x="760" y="628.5" font-size="12" fill="#efefef" text-anchor="end">0/3</text>
+</svg>
